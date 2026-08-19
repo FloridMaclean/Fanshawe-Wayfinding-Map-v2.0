@@ -1,0 +1,29 @@
+{
+  "name": "fanshawe-wayfinding-app",
+  "version": "1.0.0",
+  "description": "Fanshawe College Wayfinding Program built with React, Vite, Tailwind CSS, and Mappedin",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc && vite build",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "@mappedin/blue-dot": "^6.19.0-beta.0",
+    "@mappedin/mappedin-js": "^6.19.0",
+    "@types/qrcode.react": "^1.0.5",
+    "qrcode.react": "^4.2.0",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "zustand": "^4.5.2"
+  },
+  "devDependencies": {
+    "@tailwindcss/vite": "^4.0.0",
+    "@types/react": "^18.3.3",
+    "@types/react-dom": "^18.3.0",
+    "@vitejs/plugin-react": "^4.3.1",
+    "tailwindcss": "^4.0.0",
+    "typescript": "^5.4.5",
+    "vite": "^5.3.1"
+  }
+}
