@@ -122,7 +122,7 @@ export const SearchResults: React.FC = () => {
           No matching rooms or locations found.
         </div>
       ) : (
-        searchResults.map((item, index) => {
+        searchResults.slice(0, 50).map((item, index) => {
           const title =
             item.name || item.displayName || item.title || item.externalId || 'Unnamed Location';
           const floor =

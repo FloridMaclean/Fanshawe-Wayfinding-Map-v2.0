@@ -1,5 +1,4 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { QRCodeSVG } from 'qrcode.react';
 import { useMapStore } from '../../store/useMapStore';
 import { getItemCategoryInfo } from './SearchResults';
 import {
@@ -12,9 +11,8 @@ import {
 } from './Icons';
 
 export const LocationDetailsPanel: React.FC = () => {
-  const { selectedLocation, setDirectionsMode, closeLocationPanel } = useMapStore();
+  const { selectedLocation, setDirectionsMode, closeLocationPanel, openQrModal } = useMapStore();
   const [isShareMenuOpen, setIsShareMenuOpen] = useState(false);
-  const [showQrModal, setShowQrModal] = useState(false);
   const [copied, setCopied] = useState(false);
   const shareMenuRef = useRef<HTMLDivElement>(null);
 
@@ -74,7 +72,7 @@ export const LocationDetailsPanel: React.FC = () => {
     <div className="flex flex-col w-full text-gray-900 animate-fadeIn">
       {/* Top action row */}
       <div className="flex items-center justify-between w-full mb-3 pr-11">
-        <div className="w-12 h-12 rounded-2xl bg-gray-50 border border-gray-200/90 flex items-center justify-center shadow-2xs">
+        <div className="w-12 h-12 rounded-2xl bg-gray-50 border border-gray-200/90 flex items-center justify-center shadow-sm">
           <FrameLocationIcon className="w-6 h-6 text-gray-700" />
         </div>
         <div className="flex items-center gap-2 relative" ref={shareMenuRef}>
@@ -119,7 +117,7 @@ export const LocationDetailsPanel: React.FC = () => {
               <button
                 onClick={() => {
                   setIsShareMenuOpen(false);
-                  setShowQrModal(true);
+                  openQrModal(shareUrl);
                 }}
                 className="w-full text-left px-3 py-2.5 hover:bg-gray-100/80 rounded-xl flex items-center gap-3 transition cursor-pointer group"
               >
@@ -172,50 +170,6 @@ export const LocationDetailsPanel: React.FC = () => {
           </span>
         </div>
       </div>
-
-      {/* QR Code Mobile Handoff Panel Overlay */}
-      {showQrModal && (
-        <div className="absolute inset-0 z-40 bg-white rounded-3xl p-4 flex flex-col items-center justify-between text-center animate-fadeIn shadow-2xl border border-gray-100/90 overflow-hidden">
-          {/* Top Header Row with Close 'X' Button */}
-          <div className="w-full flex items-start justify-between text-left pb-1">
-            <div className="flex flex-col min-w-0 flex-1 pr-2">
-              <h3 className="text-xl font-extrabold text-gray-900 tracking-tight leading-tight">
-                Mobile Handoff
-              </h3>
-              <p className="text-xs text-gray-500 font-medium mt-0.5 leading-snug">
-                Scan with phone camera to open on mobile
-              </p>
-            </div>
-            <button
-              onClick={() => setShowQrModal(false)}
-              className="w-9 h-9 rounded-full bg-gray-100 hover:bg-gray-200 text-gray-600 flex items-center justify-center transition cursor-pointer flex-shrink-0"
-              title="Close Mobile Handoff"
-              aria-label="Close Mobile Handoff"
-            >
-              <ClearIcon className="w-4 h-4" />
-            </button>
-          </div>
-
-          {/* QR Code Container perfectly fitted to side panel card height */}
-          <div className="w-full flex-1 my-1.5 p-2.5 bg-white rounded-2xl border-2 border-gray-200/90 shadow-2xs flex items-center justify-center overflow-hidden">
-            <QRCodeSVG
-              value={shareUrl}
-              size={180}
-              level="H"
-              includeMargin={false}
-              className="max-h-full max-w-full"
-              imageSettings={{
-                src: 'https://www.fanshawec.ca/themes/custom/de_theme/logo.png',
-                x: undefined,
-                y: undefined,
-                height: 26,
-                width: 26,
-                excavate: true,
-              }}
-            />
-          </div>
-        </div>
-      )}
     </div>
   );
 };

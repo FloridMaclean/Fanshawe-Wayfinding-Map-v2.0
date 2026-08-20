@@ -1,8 +1,7 @@
-import React, { useState, useRef, useEffect } from 'react';
+import React, { useState, useRef, useEffect, useMemo } from 'react';
 import { useMapStore, filterAndSortSearchEntries } from '../../store/useMapStore';
 import {
   ArrowLeftIcon,
-  DotsMenuIcon,
   FrameLocationIcon,
   SwapArrowsIcon,
   WheelchairIcon,
@@ -16,15 +15,11 @@ export const DirectionsSetupPanel: React.FC = () => {
     isAccessiblePath,
     activeDirections,
     searchItems,
-    isLiveLocationActive,
-    isOutOfRadius,
-    userDistanceToCampus,
     setOriginLocation,
     setDestinationLocation,
     setDirectionsMode,
     setIsAccessiblePath,
     swapOriginAndDestination,
-    setUseCurrentLocationAsOrigin,
   } = useMapStore();
 
   const [isEditingOrigin, setIsEditingOrigin] = useState(false);
@@ -59,12 +54,24 @@ export const DirectionsSetupPanel: React.FC = () => {
     destinationLocation?.externalId ||
     'Choose destination';
 
-  // Calculate estimated time from activeDirections or fallback calculation based on distance/walking speed
-  const totalMeters = activeDirections?.distance ?? 280; // default ~280 meters if fallback
-  const totalMinutes = Math.max(1, Math.round(totalMeters / 70)); // ~70m per min walking speed
+  // Calculate exact route distance and estimated walking time from activeDirections
+  const distMeters = activeDirections?.distance;
+  const formattedDist =
+    typeof distMeters === 'number'
+      ? distMeters < 1000
+        ? `${Math.round(distMeters)} m`
+        : `${(distMeters / 1000).toFixed(1)} km`
+      : null;
+  const totalMinutes = typeof distMeters === 'number' ? Math.max(1, Math.round(distMeters / 70)) : null;
 
-  const filteredOriginItems = filterAndSortSearchEntries(searchItems, originFilter);
-  const filteredDestItems = filterAndSortSearchEntries(searchItems, destFilter);
+  const filteredOriginItems = useMemo(
+    () => filterAndSortSearchEntries(searchItems, originFilter),
+    [searchItems, originFilter]
+  );
+  const filteredDestItems = useMemo(
+    () => filterAndSortSearchEntries(searchItems, destFilter),
+    [searchItems, destFilter]
+  );
 
   return (
     <div ref={setupRef} className="flex flex-col w-full text-gray-900 animate-fadeIn">
@@ -80,12 +87,6 @@ export const DirectionsSetupPanel: React.FC = () => {
           </button>
           <h2 className="text-xl font-bold text-gray-900 tracking-tight">Directions</h2>
         </div>
-        <button
-          className="p-1.5 rounded-full hover:bg-gray-100 text-gray-500 transition cursor-pointer"
-          title="More options"
-        >
-          <DotsMenuIcon className="w-5 h-5" />
-        </button>
       </div>
 
       {/* Origin & Destination Inputs Container */}
@@ -95,7 +96,7 @@ export const DirectionsSetupPanel: React.FC = () => {
           <div className="w-full bg-[#f2f2f4] hover:bg-[#eaeaea] transition-colors rounded-2xl px-3.5 py-3 flex items-center gap-3 border border-transparent focus-within:border-blue-500 focus-within:bg-white">
             {/* Visual indicator dot & icon */}
             <div className="flex items-center gap-2 flex-shrink-0">
-              <span className={`w-2 h-2 rounded-full ${originLocation?.isUserLocation ? 'bg-blue-600 animate-pulse' : 'bg-gray-400'}`} />
+              <span className="w-2 h-2 rounded-full bg-gray-400" />
               <div className="p-1 rounded-lg bg-gray-200/80 text-gray-700">
                 <FrameLocationIcon className="w-4 h-4" />
               </div>
@@ -124,24 +125,6 @@ export const DirectionsSetupPanel: React.FC = () => {
           {/* Autocomplete list for origin */}
           {isEditingOrigin && (
             <div className="absolute top-full -left-2 -right-2 mt-2 max-h-[60vh] overflow-y-auto bg-white rounded-3xl border-2 border-gray-300 shadow-2xl z-50 divide-y divide-gray-100 ring-1 ring-black/15 animate-fadeIn">
-              {/* Option 0: Use My Current Location */}
-              <button
-                onMouseDown={(e) => e.preventDefault()}
-                onClick={() => {
-                  setUseCurrentLocationAsOrigin();
-                  setIsEditingOrigin(false);
-                }}
-                className="w-full text-left px-4 py-3 bg-blue-50/80 hover:bg-blue-100 text-sm font-extrabold text-blue-700 flex justify-between items-center transition cursor-pointer border-b border-blue-100"
-              >
-                <span className="flex items-center gap-2">
-                  <span className="w-2.5 h-2.5 rounded-full bg-blue-600 animate-pulse" />
-                  Use My Current Location
-                </span>
-                <span className="text-[11px] text-blue-800 bg-blue-200/80 px-2 py-0.5 rounded-md font-bold">
-                  {isOutOfRadius ? 'Out of Radius' : 'GPS'}
-                </span>
-              </button>
-
               {filteredOriginItems.slice(0, 25).map((entry) => (
                 <button
                   key={entry.item.id}
@@ -229,23 +212,7 @@ export const DirectionsSetupPanel: React.FC = () => {
         </button>
       </div>
 
-      {/* Out of Radius Notice Card */}
-      {(isOutOfRadius || originLocation?.isOutOfRadius) && (
-        <div className="w-full bg-amber-50/90 border border-amber-300/80 rounded-2xl p-3.5 mt-3 flex flex-col gap-1.5 animate-fadeIn shadow-2xs">
-          <div className="flex items-center justify-between">
-            <div className="flex items-center gap-1.5 text-amber-900 font-extrabold text-xs uppercase tracking-wider">
-              <span className="text-sm">⚠️</span>
-              <span>Out of Radius</span>
-            </div>
-            <span className="text-[10px] font-bold text-amber-900 bg-amber-200/80 px-2 py-0.5 rounded-md border border-amber-300">
-              {userDistanceToCampus ? `${(userDistanceToCampus / 1000).toFixed(1)} km away` : 'Too far away'}
-            </span>
-          </div>
-          <p className="text-xs text-amber-800 font-medium leading-tight">
-            You are currently too far away from Fanshawe College for live GPS navigation.
-          </p>
-        </div>
-      )}
+
 
       {/* Divider */}
       <hr className="border-gray-100 my-4" />
@@ -278,9 +245,11 @@ export const DirectionsSetupPanel: React.FC = () => {
           </div>
           <div className="flex flex-col">
             <span className="text-lg font-extrabold text-gray-900 leading-tight">
-              {totalMinutes} {totalMinutes === 1 ? 'minute' : 'minutes'}
+              {totalMinutes !== null ? `${totalMinutes} ${totalMinutes === 1 ? 'minute' : 'minutes'}` : 'Calculating route...'}
             </span>
-            <span className="text-xs text-gray-500 font-medium">To {destName}</span>
+            <span className="text-xs text-gray-500 font-medium">
+              {formattedDist ? `${formattedDist} • ` : ''}To {destName}
+            </span>
           </div>
         </div>
 

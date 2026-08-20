@@ -508,6 +508,25 @@ export const TurnSlightLeftIcon: React.FC<IconProps> = ({ className = 'w-4 h-4',
   </svg>
 );
 
+export const TurnSlightRightIcon: React.FC<IconProps> = ({ className = 'w-4 h-4', size }) => (
+  <svg
+    className={className}
+    width={size}
+    height={size}
+    fill="none"
+    stroke="currentColor"
+    viewBox="0 0 24 24"
+  >
+    <path
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      strokeWidth={2.2}
+      d="M10 18l4-9m0 0h4m-4 0V4"
+    />
+  </svg>
+);
+
+
 export const FrameLocationIcon: React.FC<IconProps> = ({ className = 'w-4 h-4', size }) => (
   <svg
     className={className}
@@ -576,6 +595,39 @@ export const QrCodeIcon: React.FC<IconProps> = ({ className = 'w-4 h-4', size })
     />
   </svg>
 );
+
+export const DotsHorizontalIcon: React.FC<IconProps> = ({ className = 'w-4 h-4', size }) => (
+  <svg
+    className={className}
+    width={size}
+    height={size}
+    fill="currentColor"
+    viewBox="0 0 24 24"
+  >
+    <circle cx="5" cy="12" r="2" />
+    <circle cx="12" cy="12" r="2" />
+    <circle cx="19" cy="12" r="2" />
+  </svg>
+);
+
+export const RestartIcon: React.FC<IconProps> = ({ className = 'w-4 h-4', size }) => (
+  <svg
+    className={className}
+    width={size}
+    height={size}
+    fill="none"
+    stroke="currentColor"
+    viewBox="0 0 24 24"
+  >
+    <path
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      strokeWidth={2}
+      d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"
+    />
+  </svg>
+);
+
 
 
 

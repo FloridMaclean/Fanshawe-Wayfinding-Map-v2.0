@@ -2,44 +2,6 @@ import { create } from 'zustand';
 import type { MapData, MapView, FloorStack, Floor } from '@mappedin/mappedin-js';
 import { showSearchLocationMarker, clearSearchLocationMarker, getMarkerTarget } from '../utils/searchMarkerUtils';
 import { showStepMarker, clearStepMarker } from '../utils/navigationMarkerUtils';
-import { showUserLocationMarker, clearUserLocationMarker } from '../utils/userLocationMarkerUtils';
-import { LocationSmoothingEngine } from '../utils/locationSmoothing';
-import { deviceOrientationManager } from '../utils/deviceOrientationUtils';
-
-const locationSmoothingEngine = new LocationSmoothingEngine({
-  posAlpha: 0.28,
-  maxAllowedAccuracy: 50,
-  maxSpeedMetersPerSec: 5.5,
-  stationaryThresholdMeters: 1.2,
-});
-
-// Fanshawe College London Campus Reference Center (Latitude, Longitude)
-const FANSHAWE_CENTER_LAT = 43.0125;
-const FANSHAWE_CENTER_LON = -81.2002;
-const CAMPUS_RADIUS_METERS = 1500; // 1.5 km threshold for campus radius
-
-/**
- * Calculates distance in meters between two lat/lon points using the Haversine formula.
- */
-function calculateHaversineDistance(
-  lat1: number,
-  lon1: number,
-  lat2: number,
-  lon2: number
-): number {
-  const R = 6371e3; // meters
-  const phi1 = (lat1 * Math.PI) / 180;
-  const phi2 = (lat2 * Math.PI) / 180;
-  const deltaPhi = ((lat2 - lat1) * Math.PI) / 180;
-  const deltaLambda = ((lon2 - lon1) * Math.PI) / 180;
-
-  const a =
-    Math.sin(deltaPhi / 2) * Math.sin(deltaPhi / 2) +
-    Math.cos(phi1) * Math.cos(phi2) * Math.sin(deltaLambda / 2) * Math.sin(deltaLambda / 2);
-  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
-
-  return R * c;
-}
 
 export function cleanString(str: string): string {
   if (!str) return '';
@@ -67,6 +29,10 @@ export interface SearchEntry {
   buildingName: string;
   floorName?: string;
   catNames?: string;
+  cleanRoom: string;
+  cleanBuilding: string;
+  cleanFloor: string;
+  cleanCombined: string;
 }
 
 export function filterAndSortSearchEntries(
@@ -93,13 +59,9 @@ export function filterAndSortSearchEntries(
       sorted = [...inBuilding, ...other];
     } else {
       sorted.sort((a, b) => {
-        const cleanA = cleanString(a.roomName);
-        const cleanB = cleanString(b.roomName);
-        const comp = cleanA.localeCompare(cleanB, undefined, { numeric: true, sensitivity: 'base' });
+        const comp = a.cleanRoom.localeCompare(b.cleanRoom, undefined, { numeric: true, sensitivity: 'base' });
         if (comp !== 0) return comp;
-        const cleanBldgA = cleanString(a.buildingName);
-        const cleanBldgB = cleanString(b.buildingName);
-        return cleanBldgA.localeCompare(cleanBldgB, undefined, { numeric: true, sensitivity: 'base' });
+        return a.cleanBuilding.localeCompare(b.cleanBuilding, undefined, { numeric: true, sensitivity: 'base' });
       });
     }
     return sorted;
@@ -131,10 +93,9 @@ export function filterAndSortSearchEntries(
   const scoredEntries: { entry: SearchEntry; rank: number; cleanRoom: string; cleanBuilding: string }[] = [];
 
   for (const entry of entries) {
-    const cleanRoom = cleanString(entry.roomName);
-    const cleanBuilding = cleanString(entry.buildingName);
-    const cleanFloor = cleanString(entry.floorName || '');
-    const cleanCombined = cleanString(`${entry.roomName} ${entry.buildingName} ${entry.floorName || ''}`);
+    const cleanRoom = entry.cleanRoom || cleanString(entry.roomName);
+    const cleanBuilding = entry.cleanBuilding || cleanString(entry.buildingName);
+    const cleanCombined = entry.cleanCombined || cleanString(`${entry.roomName} ${entry.buildingName} ${entry.floorName || ''}`);
 
     let rank = -1;
 
@@ -200,6 +161,71 @@ export function filterAndSortSearchEntries(
   return scoredEntries.map((s) => s.entry);
 }
 
+let currentDirectionsRequestId = 0;
+
+export function resolveDirectionCandidates(item: any): any[] {
+  if (!item) return [];
+  const candidates: any[] = [];
+  const add = (candidate: any) => {
+    if (candidate && !candidates.includes(candidate)) {
+      candidates.push(candidate);
+    }
+  };
+
+  const target = item?.item ? item.item : item;
+  add(target);
+
+  if (target?.space) add(target.space);
+  if (target?.location) add(target.location);
+
+  if (Array.isArray(target?.spaces)) {
+    target.spaces.forEach((s: any) => add(s));
+  }
+  if (Array.isArray(target?.locations)) {
+    target.locations.forEach((l: any) => {
+      add(l);
+      if (l.space) add(l.space);
+      if (Array.isArray(l.spaces)) l.spaces.forEach((s: any) => add(s));
+    });
+  }
+
+  if (target?.center && typeof target.center.latitude === 'number') {
+    add(target.center);
+  }
+  const markerTarget = getMarkerTarget(target);
+  if (markerTarget) add(markerTarget);
+
+  return candidates;
+}
+
+export function getCoordLatLon(target: any): { latitude: number; longitude: number } | null {
+  if (!target) return null;
+  if (typeof target.latitude === 'number' && typeof target.longitude === 'number') {
+    return { latitude: target.latitude, longitude: target.longitude };
+  }
+  if (target.center && typeof target.center.latitude === 'number') {
+    return { latitude: target.center.latitude, longitude: target.center.longitude };
+  }
+  const markerT = getMarkerTarget(target);
+  if (markerT && typeof markerT.latitude === 'number') {
+    return { latitude: markerT.latitude, longitude: markerT.longitude };
+  }
+  return null;
+}
+
+export function calculateBearingAngle(
+  start: { latitude: number; longitude: number },
+  end: { latitude: number; longitude: number }
+): number {
+  const lat1 = (start.latitude * Math.PI) / 180;
+  const lat2 = (end.latitude * Math.PI) / 180;
+  const dLon = ((end.longitude - start.longitude) * Math.PI) / 180;
+
+  const y = Math.sin(dLon) * Math.cos(lat2);
+  const x = Math.cos(lat1) * Math.sin(lat2) - Math.sin(lat1) * Math.cos(lat2) * Math.cos(dLon);
+  const brng = (Math.atan2(y, x) * 180) / Math.PI;
+  return (brng + 360) % 360;
+}
 
 interface MapState {
   mapData: MapData | null;
@@ -227,17 +253,8 @@ interface MapState {
   activeDirections: any | null;
   activeStepIndex: number;
 
-  // Live Location & Out-of-Radius state
-  isLiveLocationActive: boolean;
-  userCoords: { latitude: number; longitude: number; accuracy?: number } | null;
-  isOutOfRadius: boolean;
-  userDistanceToCampus: number | null; // in meters
-  locationError: string | null;
-  watchId: number | null;
-  blueDotInstance: any | null;
-  isFollowingUser: boolean;
-  isSimulationActive: boolean;
-  simulationTimerId: any | null;
+  // QR Code Modal State
+  qrModalUrl: string | null;
 
   // Actions
   setMapData: (mapData: MapData) => void;
@@ -263,17 +280,8 @@ interface MapState {
   calculateDirections: () => Promise<void>;
   clearDirections: () => void;
   closeLocationPanel: () => void;
-
-  // Live Location actions
-  enableLiveLocation: () => void;
-  disableLiveLocation: () => void;
-  toggleLiveLocation: () => void;
-  setUseCurrentLocationAsOrigin: () => void;
-  setBlueDot: (blueDot: any) => void;
-  toggleFollowUser: () => void;
-  startSimulationMode: () => void;
-  stopSimulationMode: () => void;
-  toggleSimulationMode: () => void;
+  openQrModal: (url: string) => void;
+  closeQrModal: () => void;
 }
 
 export const useMapStore = create<MapState>((set, get) => ({
@@ -301,16 +309,7 @@ export const useMapStore = create<MapState>((set, get) => ({
   activeDirections: null,
   activeStepIndex: 0,
 
-  isLiveLocationActive: false,
-  userCoords: null,
-  isOutOfRadius: false,
-  userDistanceToCampus: null,
-  locationError: null,
-  watchId: null,
-  blueDotInstance: null,
-  isFollowingUser: false,
-  isSimulationActive: false,
-  simulationTimerId: null,
+  qrModalUrl: null,
 
   setMapData: (mapData: MapData) => {
     const rawStacks = mapData.getByType('floor-stack') as FloorStack[];
@@ -350,26 +349,31 @@ export const useMapStore = create<MapState>((set, get) => ({
             .join(' ')
         : (item.category?.name || item.category || '').toString().toLowerCase();
 
+      const cleanRoom = cleanString(roomName);
+      const cleanBuilding = cleanString(buildingName);
+      const cleanFloor = cleanString(floorName);
+      const cleanCombined = cleanString(`${roomName} ${buildingName} ${floorName}`);
+
       return {
         item,
         roomName,
         buildingName,
         floorName,
         catNames,
+        cleanRoom,
+        cleanBuilding,
+        cleanFloor,
+        cleanCombined,
         searchText: `${roomName} ${desc} ${catNames} ${floorName} ${buildingName}`.toLowerCase(),
       };
     });
 
     // Sort room entries by building name then room name naturally (ignoring space and other characters)
     searchEntries.sort((a, b) => {
-      const cleanBldgA = cleanString(a.buildingName);
-      const cleanBldgB = cleanString(b.buildingName);
-      const bComp = cleanBldgA.localeCompare(cleanBldgB, undefined, { numeric: true, sensitivity: 'base' });
+      const bComp = a.cleanBuilding.localeCompare(b.cleanBuilding, undefined, { numeric: true, sensitivity: 'base' });
       if (bComp !== 0) return bComp;
 
-      const cleanRoomA = cleanString(a.roomName);
-      const cleanRoomB = cleanString(b.roomName);
-      return cleanRoomA.localeCompare(cleanRoomB, undefined, { numeric: true, sensitivity: 'base' });
+      return a.cleanRoom.localeCompare(b.cleanRoom, undefined, { numeric: true, sensitivity: 'base' });
     });
 
     const initialResults = filterAndSortSearchEntries(searchEntries, get().searchQuery, get().selectedBuildingId);
@@ -425,41 +429,6 @@ export const useMapStore = create<MapState>((set, get) => ({
       floors,
       isLoading: false,
     });
-
-    if (get().isLiveLocationActive && get().userCoords) {
-      const { latitude, longitude, accuracy } = get().userCoords!;
-      const isOutOfRadius = get().isOutOfRadius;
-      const distance = get().userDistanceToCampus;
-      const distanceKm = distance ? (distance / 1000).toFixed(1) : '';
-      const distanceText = isOutOfRadius ? `${distanceKm} km away` : 'On Campus';
-
-      const fallbackCampusNode =
-        get().searchItems.find((e) => (e.item.name || '').toUpperCase().includes('C116'))?.item ||
-        get().searchItems[0]?.item;
-
-      let userTarget: any = null;
-      if (!isOutOfRadius) {
-        try {
-          if (typeof (mapView as any).createCoordinate === 'function') {
-            userTarget = (mapView as any).createCoordinate(latitude, longitude, currentFloor);
-          } else {
-            userTarget = { latitude, longitude, floorId: currentFloor?.id, floor: currentFloor };
-          }
-        } catch (e) {
-          userTarget = fallbackCampusNode;
-        }
-      } else {
-        userTarget = fallbackCampusNode;
-      }
-
-      if (userTarget) {
-        showUserLocationMarker(mapView, userTarget, {
-          isOutOfRadius,
-          distanceText,
-          accuracy,
-        });
-      }
-    }
 
     // Auto-select location or directions from URL parameters if present
     if (typeof window !== 'undefined') {
@@ -545,13 +514,16 @@ export const useMapStore = create<MapState>((set, get) => ({
         ? buildingSpaces
         : targetFloor || mapView.currentFloor;
 
+    const isDesktop = typeof window !== 'undefined' && window.innerWidth >= 768;
     if (focusTarget) {
       try {
         mapView.Camera.focusOn(focusTarget, {
-          minZoomLevel: 17.5,
-          maxZoomLevel: 18.2,
+          minZoomLevel: 16.5,
+          maxZoomLevel: 17.2,
+          pitch: 0,
+          padding: { top: 90, right: 90, bottom: 90, left: isDesktop ? 480 : 50 },
           duration: 500,
-        });
+        } as any);
       } catch (e) {
         console.warn('Failed to focus camera on building center:', e);
       }
@@ -615,9 +587,16 @@ export const useMapStore = create<MapState>((set, get) => ({
     showSearchLocationMarker(mapView, item);
 
     try {
-      const focusOptions = { minZoomLevel: 17.8, maxZoomLevel: 18.5, duration: 500 };
+      const isDesktop = typeof window !== 'undefined' && window.innerWidth >= 768;
+      const focusOptions = {
+        minZoomLevel: 16.8,
+        maxZoomLevel: 17.5,
+        pitch: 0,
+        padding: { top: 90, right: 90, bottom: 90, left: isDesktop ? 480 : 50 },
+        duration: 500,
+      };
       const focusTarget = getMarkerTarget(item);
-      mapView.Camera.focusOn(focusTarget || item, focusOptions);
+      mapView.Camera.focusOn(focusTarget || item, focusOptions as any);
     } catch (e) {
       console.warn('Could not focus camera on selected search result:', e);
     }
@@ -741,6 +720,34 @@ export const useMapStore = create<MapState>((set, get) => ({
     if (targetFloor && targetFloor.id && mapView.currentFloor?.id !== targetFloor.id) {
       try {
         mapView.setFloor(targetFloor);
+        try {
+          mapView.updateState(targetFloor, { visible: true });
+        } catch (e) {}
+
+        if (activeDirections) {
+          try {
+            mapView.Navigation.draw(activeDirections, {
+              setMapToDeparture: false,
+              setMapOnConnectionClick: true,
+              animatePathDrawing: false,
+              pathOptions: {
+                color: '#003BAF',
+                accentColor: '#ffffff',
+                displayArrowsOnPath: true,
+                animateArrowsOnPath: true,
+                showPulse: false,
+                width: 3.0,
+                __EXPERIMENTAL__CONNECTION_COLOR: '#003BAF',
+                __EXPERIMENTAL__CONNECTION_DASHED: false,
+              },
+              markerOptions: {
+                departureColor: '#003BAF',
+                destinationColor: '#DC2626',
+                animated: true,
+              },
+            });
+          } catch (e) {}
+        }
 
         // Sync floor selection state
         const currentStack = targetFloor.floorStack;
@@ -762,26 +769,50 @@ export const useMapStore = create<MapState>((set, get) => ({
     // Get target coordinate or location for this step
     const coord = inst?.coordinate || (isFirstStep ? originLocation : destinationLocation);
 
-    if (coord) {
-      // Focus camera on step location with perfect dynamic framing (zoom ~18.5 - 19.0)
-      try {
-        const type = (inst?.action?.type || '').toLowerCase();
-        const text = (inst?.action?.text || inst?.instruction || '').toLowerCase();
-        const isStairsOrElevator =
-          type.includes('connection') ||
-          type.includes('stairs') ||
-          type.includes('elevator') ||
-          text.includes('stair') ||
-          text.includes('elevator') ||
-          !!inst?.action?.connection;
+    // Calculate bearing angle to orient camera facing direction of travel
+    let cameraRotation: number | undefined = undefined;
+    const nextInst = activeDirections?.instructions?.[index + 1] as any;
+    const nextCoordObj = nextInst?.coordinate || (isLastStep ? undefined : getMarkerTarget(destinationLocation));
 
-        mapView.Camera.focusOn(coord, {
-          minZoomLevel: isStairsOrElevator ? 18.2 : 18.5,
-          maxZoomLevel: isStairsOrElevator ? 18.7 : 19.0,
-          pitch: 35,
-          duration: 450,
-        });
-      } catch (e) {}
+    const startPos = getCoordLatLon(coord);
+    const endPos = getCoordLatLon(nextCoordObj);
+    if (startPos && endPos) {
+      cameraRotation = calculateBearingAngle(startPos, endPos);
+    }
+
+    if (coord) {
+      // Focus camera on active step segment in 2D top-down overview zoomed out 10%
+      try {
+        const isDesktop = typeof window !== 'undefined' && window.innerWidth >= 768;
+        const stepPadding = { top: 100, right: 100, bottom: 100, left: isDesktop ? 480 : 50 };
+        const targetsToFocus: any[] = [coord];
+        if (nextCoordObj) targetsToFocus.push(nextCoordObj);
+
+        if (targetsToFocus.length > 1) {
+          mapView.Camera.focusOn(targetsToFocus, {
+            pitch: 0,
+            padding: stepPadding,
+            duration: 500,
+          } as any);
+        } else {
+          mapView.Camera.focusOn(coord, {
+            minZoomLevel: 16.8,
+            maxZoomLevel: 17.5,
+            pitch: 0,
+            padding: stepPadding,
+            duration: 500,
+          } as any);
+        }
+      } catch (e) {
+        try {
+          const isDesktop = typeof window !== 'undefined' && window.innerWidth >= 768;
+          mapView.Camera.focusOn(coord, {
+            pitch: 0,
+            padding: { top: 90, right: 90, bottom: 90, left: isDesktop ? 480 : 50 },
+            duration: 450,
+          } as any);
+        } catch (err) {}
+      }
 
       // Show step marker pin on map with floor tag options
       const originName = originLocation?.name || 'Start';
@@ -813,7 +844,7 @@ export const useMapStore = create<MapState>((set, get) => ({
     set({
       originLocation: destinationLocation,
       destinationLocation: originLocation,
-      selectedLocation: originLocation,
+      selectedLocation: destinationLocation,
     });
     calculateDirections();
   },
@@ -822,17 +853,20 @@ export const useMapStore = create<MapState>((set, get) => ({
     const { mapView, originLocation, destinationLocation, isAccessiblePath, floorStacks } = get();
     if (!mapView || !originLocation || !destinationLocation) return;
 
+    currentDirectionsRequestId++;
+    const requestId = currentDirectionsRequestId;
+
     try {
       try {
         clearStepMarker(mapView);
-        mapView.Navigation.clear();
       } catch (e) {}
 
       // Helper to find floor object from location item
       const getFloorObj = (loc: any) =>
         loc?.floor ||
         loc?.location?.floor ||
-        (Array.isArray(loc?.locations) && loc?.locations[0]?.floor);
+        (Array.isArray(loc?.locations) && loc?.locations[0]?.floor) ||
+        loc?.space?.floor;
 
       const originFloor = getFloorObj(originLocation);
       if (originFloor && originFloor.id && mapView.currentFloor?.id !== originFloor.id) {
@@ -851,75 +885,123 @@ export const useMapStore = create<MapState>((set, get) => ({
         } catch (e) {}
       }
 
-      const getDirectionsTarget = (loc: any) => {
-        if (!loc) return null;
-        if (loc.isUserLocation && loc.coordinate) {
-          return loc.coordinate;
-        }
-        return loc;
-      };
+      // Resolve all candidate targets to find the route with absolute minimum physical distance
+      const originCandidates = resolveDirectionCandidates(originLocation);
+      const destCandidates = resolveDirectionCandidates(destinationLocation);
 
-      const originTarget = getDirectionsTarget(originLocation);
-      const destTarget = getDirectionsTarget(destinationLocation);
+      let bestDirections: any = null;
 
-      let directions: any = null;
+      // 1. Try primary origin and destination locations first
       try {
-        directions = await mapView.getDirections(originTarget, destTarget, {
-          accessible: isAccessiblePath,
-        });
-      } catch (e) {
-        console.warn('Failed to calculate directions with primary target:', e);
+        const d = await mapView.getDirections(originLocation, destinationLocation, { accessible: isAccessiblePath });
+        if (d && typeof d.distance === 'number') {
+          bestDirections = d;
+        }
+      } catch (e) {}
+
+      // 2. Evaluate candidate target pairs concurrently if primary call returned no route
+      if (!bestDirections && (originCandidates.length > 1 || destCandidates.length > 1)) {
+        const maxCandidates = 3;
+        const subOriginCandidates = originCandidates.slice(0, maxCandidates);
+        const subDestCandidates = destCandidates.slice(0, maxCandidates);
+
+        const candidateTasks: Promise<any>[] = [];
+        for (const o of subOriginCandidates) {
+          for (const dTarget of subDestCandidates) {
+            candidateTasks.push(
+              mapView
+                .getDirections(o, dTarget, { accessible: isAccessiblePath })
+                .catch(() => null)
+            );
+          }
+        }
+
+        const candidateResults = await Promise.all(candidateTasks);
+        for (const res of candidateResults) {
+          if (res && typeof res.distance === 'number') {
+            if (!bestDirections || res.distance < bestDirections.distance) {
+              bestDirections = res;
+            }
+          }
+        }
       }
 
-      if (!directions && originLocation?.isUserLocation) {
-        try {
-          directions = await mapView.getDirections(originLocation, destTarget, {
-            accessible: isAccessiblePath,
-          });
-        } catch (e) {}
-      }
+      // Check if a newer directions request was made while calculating
+      if (requestId !== currentDirectionsRequestId) return;
 
-      if (directions) {
-        set({ activeDirections: directions, activeStepIndex: 0 });
+      if (bestDirections) {
+        set({ activeDirections: bestDirections, activeStepIndex: 0 });
         try {
-          await mapView.Navigation.draw(directions, {
+          // Clear previous drawings cleanly before drawing new route line
+          try {
+            mapView.Navigation.clear();
+          } catch (e) {}
+
+          await mapView.Navigation.draw(bestDirections, {
             setMapToDeparture: true,
             setMapOnConnectionClick: true,
             animatePathDrawing: true,
             pathOptions: {
-              color: '#5c0628',
+              color: '#003BAF',
               accentColor: '#ffffff',
               displayArrowsOnPath: true,
               animateArrowsOnPath: true,
-              showPulse: true,
-              pulseIterations: Infinity,
-              pulsePauseDuration: 400,
-              width: 2.2,
-              __EXPERIMENTAL__CONNECTION_COLOR: '#5c0628',
-              __EXPERIMENTAL__CONNECTION_DASHED: true,
+              showPulse: false,
+              width: 3.0,
+              __EXPERIMENTAL__CONNECTION_COLOR: '#003BAF',
+              __EXPERIMENTAL__CONNECTION_DASHED: false,
             },
             markerOptions: {
-              departureColor: '#10B981',
+              departureColor: '#003BAF',
               destinationColor: '#DC2626',
               animated: true,
             },
           });
 
-          // Focus camera on origin to start navigation clearly
-          try {
-            mapView.Camera.focusOn(originLocation, {
-              minZoomLevel: 18.5,
-              maxZoomLevel: 19.0,
-              pitch: 35,
-              duration: 500,
+          if (requestId !== currentDirectionsRequestId) return;
+
+          // Frame entire route from origin to destination on map in 2D top-down overview
+          const routeCoords: any[] = [];
+          if (bestDirections.instructions && Array.isArray(bestDirections.instructions)) {
+            bestDirections.instructions.forEach((inst: any) => {
+              if (inst.coordinate) routeCoords.push(inst.coordinate);
             });
-          } catch (e) {}
+          }
+          const origCoord = getMarkerTarget(originLocation) || originLocation;
+          const destCoord = getMarkerTarget(destinationLocation) || destinationLocation;
+          if (origCoord) routeCoords.unshift(origCoord);
+          if (destCoord) routeCoords.push(destCoord);
+
+          if (routeCoords.length > 0) {
+            const isDesktop = typeof window !== 'undefined' && window.innerWidth >= 768;
+            const routePadding = { top: 120, right: 120, bottom: 120, left: isDesktop ? 500 : 70 };
+
+            try {
+              mapView.Camera.focusOn(routeCoords, {
+                pitch: 0,
+                padding: routePadding,
+                duration: 600,
+              } as any);
+            } catch (e) {
+              try {
+                if (origCoord) {
+                  mapView.Camera.focusOn(origCoord, {
+                    minZoomLevel: 16.8,
+                    maxZoomLevel: 17.5,
+                    pitch: 0,
+                    padding: routePadding,
+                    duration: 500,
+                  } as any);
+                }
+              } catch (err) {}
+            }
+          }
 
           // Show initial step marker on origin coordinate
-          const firstInst = directions.instructions?.[0] as any;
-          const firstCoord = firstInst?.coordinate || originLocation;
+          const firstInst = bestDirections.instructions?.[0] as any;
+          const firstCoord = firstInst?.coordinate || origCoord;
           if (firstCoord) {
-            const originName = originLocation?.name || 'Start';
+            const originName = originLocation?.name || originLocation?.displayName || 'Start';
             const floorTag = originFloor?.name ? ` (${originFloor.name})` : '';
             const stepText = firstInst?.action?.text || firstInst?.instruction || `Depart ${originName}${floorTag}`;
             showStepMarker(mapView, firstCoord, 0, stepText);
@@ -932,6 +1014,7 @@ export const useMapStore = create<MapState>((set, get) => ({
       console.warn('Failed to calculate directions:', err);
     }
   },
+
 
   clearDirections: () => {
     const { mapView } = get();
@@ -976,496 +1059,8 @@ export const useMapStore = create<MapState>((set, get) => ({
     });
   },
 
-  enableLiveLocation: () => {
-    const { watchId, mapView, mapData, searchItems, blueDotInstance } = get();
-    if (watchId !== null) return; // Already watching
-
-    set({ isLiveLocationActive: true, locationError: null });
-
-    locationSmoothingEngine.reset();
-    deviceOrientationManager.start();
-
-    if (blueDotInstance && typeof blueDotInstance.enable === 'function') {
-      try {
-        blueDotInstance.enable({
-          color: '#2563eb',
-          accuracyRing: { color: '#3b82f6', opacity: 0.25 },
-        });
-      } catch (e) {
-        console.warn('BlueDot enable warning:', e);
-      }
-    }
-
-    // Fallback campus node (Building C116 / Ground Floor Entrance)
-    const fallbackCampusNode =
-      searchItems.find((e) => (e.item.name || '').toUpperCase().includes('C116'))?.item ||
-      searchItems[0]?.item;
-
-    const findClosestSpace = (lat: number, lon: number) => {
-      const currentMapData = get().mapData;
-      if (!currentMapData) return null;
-      try {
-        const spaces = currentMapData.getByType('space') as any[];
-        let closest: any = null;
-        let minD = Infinity;
-        for (const s of spaces) {
-          if (s.center && typeof s.center.latitude === 'number') {
-            const dist = calculateHaversineDistance(lat, lon, s.center.latitude, s.center.longitude);
-            if (dist < minD) {
-              minD = dist;
-              closest = s;
-            }
-          }
-        }
-        return { closestSpace: closest, distance: minD };
-      } catch (e) {
-        return null;
-      }
-    };
-
-    const processPosition = (
-      rawLat: number,
-      rawLon: number,
-      accuracy?: number,
-      isSimulated: boolean = false
-    ) => {
-      // 1. Pass raw location fix through Location Smoothing & Noise Reduction Engine
-      const headingFromSensor = deviceOrientationManager.getCurrentHeading();
-      let smoothedPoint = locationSmoothingEngine.filter({
-        latitude: rawLat,
-        longitude: rawLon,
-        accuracy: accuracy || 15,
-        heading: headingFromSensor,
-        timestamp: Date.now(),
-      });
-
-      const {
-        mapView: currentMapView,
-        mapData: currentMapData,
-        directionsMode,
-        activeDirections,
-        activeStepIndex,
-        originLocation,
-        blueDotInstance: currentBlueDot,
-        isFollowingUser,
-        setActiveStepIndex,
-      } = get();
-
-      // 2. Map Path Snapping: If active route directions exist, snap smoothed point to polyline
-      if (activeDirections?.instructions && activeDirections.instructions.length > 0) {
-        const pathCoords = activeDirections.instructions
-          .map((inst: any) => inst?.coordinate)
-          .filter((c: any) => c && typeof c.latitude === 'number');
-
-        if (pathCoords.length >= 2) {
-          smoothedPoint = locationSmoothingEngine.snapToPath(smoothedPoint, pathCoords, 12.0);
-        }
-      }
-
-      const { latitude, longitude } = smoothedPoint;
-      const distAccuracy = smoothedPoint.accuracy || accuracy || 10;
-      const heading = smoothedPoint.heading ?? headingFromSensor;
-
-      const distance = calculateHaversineDistance(
-        latitude,
-        longitude,
-        FANSHAWE_CENTER_LAT,
-        FANSHAWE_CENTER_LON
-      );
-      const isOutOfRadius = !isSimulated && distance > CAMPUS_RADIUS_METERS;
-      const distanceKm = (distance / 1000).toFixed(1);
-      const distanceText = isOutOfRadius ? `${distanceKm} km away` : 'On Campus';
-
-      set({
-        userCoords: { latitude, longitude, accuracy: distAccuracy },
-        userDistanceToCampus: Math.round(distance),
-        isOutOfRadius,
-      });
-
-      if (currentMapView && currentMapData) {
-        const spatialResult = findClosestSpace(latitude, longitude);
-        const closestSpace = spatialResult?.closestSpace;
-        const targetFloor =
-          closestSpace?.floor ||
-          currentMapView.currentFloor ||
-          (currentMapData.getByType('floor') as Floor[]).find(
-            (f) => f.elevation === 0 || f.name?.toLowerCase().includes('ground')
-          );
-
-        let userTarget: any = null;
-
-        if (!isOutOfRadius) {
-          try {
-            if (typeof (currentMapView as any).createCoordinate === 'function') {
-              userTarget = (currentMapView as any).createCoordinate(latitude, longitude, targetFloor);
-            } else if (typeof (currentMapData as any).createCoordinate === 'function') {
-              userTarget = (currentMapData as any).createCoordinate(latitude, longitude, targetFloor);
-            } else {
-              userTarget = {
-                latitude,
-                longitude,
-                floorId: targetFloor?.id,
-                floor: targetFloor,
-              };
-            }
-          } catch (e) {
-            console.warn('Could not create exact coordinate target, falling back:', e);
-            userTarget = closestSpace || fallbackCampusNode;
-          }
-        } else {
-          userTarget = fallbackCampusNode;
-        }
-
-        if (userTarget) {
-          // Switch map floor to the user's actual building floor if different from current view floor
-          if (targetFloor && targetFloor.id && currentMapView.currentFloor?.id !== targetFloor.id) {
-            try {
-              currentMapView.setFloor(targetFloor);
-              get().syncFromMapView(targetFloor);
-            } catch (e) {}
-          }
-
-          // Pass position and heading to Mappedin BlueDot engine
-          if (currentBlueDot && typeof currentBlueDot.update === 'function') {
-            try {
-              currentBlueDot.update({
-                latitude: userTarget.latitude ?? latitude,
-                longitude: userTarget.longitude ?? longitude,
-                accuracy: distAccuracy,
-                floorOrFloorId: targetFloor,
-              });
-            } catch (e) {}
-          }
-
-          showUserLocationMarker(currentMapView, userTarget, {
-            isOutOfRadius,
-            distanceText,
-            accuracy: distAccuracy,
-            isSimulated,
-            heading,
-          });
-
-          // Turn-by-Turn Auto Advancement: If navigating, check proximity to upcoming instruction waypoint
-          if (
-            directionsMode === 'navigating' &&
-            activeDirections?.instructions &&
-            activeStepIndex < activeDirections.instructions.length - 1
-          ) {
-            const nextInstruction = activeDirections.instructions[activeStepIndex + 1] as any;
-            const nextCoord = nextInstruction?.coordinate;
-            if (nextCoord && typeof nextCoord.latitude === 'number') {
-              const distToNextStep = calculateHaversineDistance(
-                latitude,
-                longitude,
-                nextCoord.latitude,
-                nextCoord.longitude
-              );
-              // Auto-advance step when within 8 meters of next turn waypoint
-              if (distToNextStep <= 8.0) {
-                setActiveStepIndex(activeStepIndex + 1);
-              }
-            }
-          }
-
-          // Focus / Follow camera
-          if (isFollowingUser) {
-            if (currentBlueDot && typeof currentBlueDot.follow === 'function') {
-              try {
-                currentBlueDot.follow('position-and-heading', { zoomLevel: 18.8 });
-              } catch (e) {
-                currentMapView.Camera.focusOn(userTarget, {
-                  minZoomLevel: 18.0,
-                  maxZoomLevel: 19.0,
-                  duration: 400,
-                });
-              }
-            } else {
-              try {
-                currentMapView.Camera.focusOn(userTarget, {
-                  minZoomLevel: 18.0,
-                  maxZoomLevel: 19.0,
-                  duration: 400,
-                });
-              } catch (e) {}
-            }
-          } else if (directionsMode !== 'navigating') {
-            try {
-              currentMapView.Camera.focusOn(userTarget, {
-                minZoomLevel: 17.8,
-                maxZoomLevel: 18.5,
-                duration: 400,
-              });
-            } catch (e) {}
-          }
-        }
-
-        // If origin location is set to "My Current Location", update its target coordinate dynamically
-        if (originLocation?.isUserLocation) {
-          const updatedOrigin = {
-            ...originLocation,
-            coordinate: userTarget,
-            floor: targetFloor,
-            isOutOfRadius,
-          };
-          set({ originLocation: updatedOrigin });
-        }
-      }
-    };
-
-    (get() as any)._processPosition = processPosition;
-
-    if (typeof window !== 'undefined' && 'geolocation' in navigator) {
-      const id = navigator.geolocation.watchPosition(
-        (pos) => {
-          processPosition(
-            pos.coords.latitude,
-            pos.coords.longitude,
-            pos.coords.accuracy,
-            false
-          );
-        },
-        (err) => {
-          console.warn('Geolocation warning/error:', err.message);
-          set({
-            locationError: err.message || 'Unable to retrieve your location',
-          });
-          // Fallback to campus coordinate on error so demo remains functional
-          processPosition(FANSHAWE_CENTER_LAT, FANSHAWE_CENTER_LON, 10, false);
-        },
-        {
-          enableHighAccuracy: true,
-          timeout: 10000,
-          maximumAge: 0,
-        }
-      );
-      set({ watchId: id });
-    } else {
-      set({ locationError: 'Geolocation is not supported by your browser' });
-      processPosition(FANSHAWE_CENTER_LAT, FANSHAWE_CENTER_LON, 10, false);
-    }
-  },
-
-  disableLiveLocation: () => {
-    const { watchId, mapView, blueDotInstance, stopSimulationMode } = get();
-    stopSimulationMode();
-
-    if (watchId !== null && typeof window !== 'undefined' && 'geolocation' in navigator) {
-      navigator.geolocation.clearWatch(watchId);
-    }
-    deviceOrientationManager.stop();
-    locationSmoothingEngine.reset();
-
-    if (blueDotInstance && typeof blueDotInstance.disable === 'function') {
-      try {
-        blueDotInstance.disable();
-      } catch (e) {}
-    }
-    if (mapView) {
-      clearUserLocationMarker(mapView);
-    }
-    set({
-      isLiveLocationActive: false,
-      userCoords: null,
-      watchId: null,
-      userDistanceToCampus: null,
-      isOutOfRadius: false,
-      isFollowingUser: false,
-    });
-  },
-
-  toggleLiveLocation: () => {
-    const { isLiveLocationActive, enableLiveLocation, disableLiveLocation } = get();
-    if (isLiveLocationActive) {
-      disableLiveLocation();
-    } else {
-      enableLiveLocation();
-    }
-  },
-
-  setUseCurrentLocationAsOrigin: () => {
-    const {
-      enableLiveLocation,
-      searchItems,
-      isOutOfRadius,
-      userDistanceToCampus,
-      userCoords,
-      mapView,
-      mapData,
-      calculateDirections,
-    } = get();
-
-    enableLiveLocation();
-
-    // Default target node on campus (C116 or first search item)
-    const fallbackNode =
-      searchItems.find((e) => (e.item.name || '').toUpperCase().includes('C116'))?.item ||
-      searchItems[0]?.item;
-
-    const currentOutOfRadius = isOutOfRadius;
-    const distanceKm = userDistanceToCampus ? (userDistanceToCampus / 1000).toFixed(1) : '2.4';
-
-    let originCoord: any = null;
-    let targetFloor: any = null;
-    if (userCoords && !currentOutOfRadius && mapView && mapData) {
-      try {
-        const spaces = mapData.getByType('space') as any[];
-        let closestSpace: any = null;
-        let minD = Infinity;
-        for (const s of spaces) {
-          if (s.center && typeof s.center.latitude === 'number') {
-            const dist = calculateHaversineDistance(
-              userCoords.latitude,
-              userCoords.longitude,
-              s.center.latitude,
-              s.center.longitude
-            );
-            if (dist < minD) {
-              minD = dist;
-              closestSpace = s;
-            }
-          }
-        }
-        targetFloor =
-          closestSpace?.floor ||
-          mapView.currentFloor ||
-          (mapData.getByType('floor') as Floor[]).find(
-            (f) => f.elevation === 0 || f.name?.toLowerCase().includes('ground')
-          );
-
-        if (typeof (mapView as any).createCoordinate === 'function') {
-          originCoord = (mapView as any).createCoordinate(userCoords.latitude, userCoords.longitude, targetFloor);
-        } else if (mapData && typeof (mapData as any).createCoordinate === 'function') {
-          originCoord = (mapData as any).createCoordinate(userCoords.latitude, userCoords.longitude, targetFloor);
-        } else {
-          originCoord = {
-            latitude: userCoords.latitude,
-            longitude: userCoords.longitude,
-            floorId: targetFloor?.id,
-            floor: targetFloor,
-          };
-        }
-      } catch (e) {}
-    }
-
-    const baseObj = originCoord || fallbackNode;
-
-    const userOriginObj = {
-      ...baseObj,
-      id: 'user-current-location',
-      name: currentOutOfRadius
-        ? `My Location (Out of Radius - ${distanceKm} km)`
-        : 'My Current Location',
-      displayName: currentOutOfRadius
-        ? `My Location (Out of Radius - ${distanceKm} km)`
-        : 'My Current Location',
-      isUserLocation: true,
-      isOutOfRadius: currentOutOfRadius,
-      distanceKm,
-      coordinate: originCoord,
-    };
-
-    set({ originLocation: userOriginObj });
-    calculateDirections();
-  },
-
-  setBlueDot: (blueDot: any) => {
-    set({ blueDotInstance: blueDot });
-  },
-
-  toggleFollowUser: () => {
-    const { isFollowingUser, blueDotInstance, mapView, userCoords } = get();
-    const newFollowing = !isFollowingUser;
-    set({ isFollowingUser: newFollowing });
-
-    if (newFollowing) {
-      if (blueDotInstance && typeof blueDotInstance.follow === 'function') {
-        try {
-          blueDotInstance.follow('position-only', { zoomLevel: 18.5 });
-        } catch (e) {}
-      } else if (mapView && userCoords) {
-        try {
-          const target =
-            typeof (mapView as any).createCoordinate === 'function'
-              ? (mapView as any).createCoordinate(userCoords.latitude, userCoords.longitude, mapView.currentFloor)
-              : mapView.currentFloor;
-          if (target) {
-            mapView.Camera.focusOn(target, { minZoomLevel: 17.8, maxZoomLevel: 18.5, duration: 400 });
-          }
-        } catch (e) {}
-      }
-    }
-  },
-
-  startSimulationMode: () => {
-    const { stopSimulationMode, enableLiveLocation, mapData } = get();
-    stopSimulationMode();
-    enableLiveLocation();
-
-    set({ isSimulationActive: true, isOutOfRadius: false });
-
-    let waypoints: { latitude: number; longitude: number }[] = [];
-    if (mapData) {
-      try {
-        const spaces = (mapData.getByType('space') as any[]).filter(
-          (s) => s.center && typeof s.center.latitude === 'number'
-        );
-        if (spaces.length >= 4) {
-          const step = Math.max(1, Math.floor(spaces.length / 8));
-          for (let i = 0; i < spaces.length; i += step) {
-            const s = spaces[i];
-            waypoints.push({
-              latitude: s.center.latitude,
-              longitude: s.center.longitude,
-            });
-          }
-        }
-      } catch (e) {}
-    }
-
-    if (waypoints.length === 0) {
-      waypoints = [
-        { latitude: 43.0123, longitude: -81.2005 },
-        { latitude: 43.0125, longitude: -81.2001 },
-        { latitude: 43.0127, longitude: -81.1998 },
-        { latitude: 43.0129, longitude: -81.1994 },
-        { latitude: 43.0131, longitude: -81.1990 },
-      ];
-    }
-
-    let currentIndex = 0;
-    const processPos = (get() as any)._processPosition;
-
-    const timer = setInterval(() => {
-      if (!get().isSimulationActive) {
-        clearInterval(timer);
-        return;
-      }
-      const pt = waypoints[currentIndex];
-      if (processPos) {
-        processPos(pt.latitude, pt.longitude, 3, true);
-      }
-      currentIndex = (currentIndex + 1) % waypoints.length;
-    }, 2200);
-
-    set({ simulationTimerId: timer });
-  },
-
-  stopSimulationMode: () => {
-    const { simulationTimerId } = get();
-    if (simulationTimerId) {
-      clearInterval(simulationTimerId);
-    }
-    set({ isSimulationActive: false, simulationTimerId: null });
-  },
-
-  toggleSimulationMode: () => {
-    const { isSimulationActive, startSimulationMode, stopSimulationMode } = get();
-    if (isSimulationActive) {
-      stopSimulationMode();
-    } else {
-      startSimulationMode();
-    }
-  },
+  openQrModal: (url: string) => set({ qrModalUrl: url }),
+  closeQrModal: () => set({ qrModalUrl: null }),
 }));
 
 

@@ -1,5 +1,4 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { QRCodeSVG } from 'qrcode.react';
 import { useMapStore } from '../../store/useMapStore';
 import {
   ArrowLeftIcon,
@@ -7,13 +6,16 @@ import {
   TurnLeftIcon,
   TurnRightIcon,
   TurnSlightLeftIcon,
+  TurnSlightRightIcon,
   StairsIcon,
+  ElevatorIcon,
   LocationPinIcon,
   CheckIcon,
   ShareIcon,
   CopyIcon,
   QrCodeIcon,
-  ClearIcon,
+  DotsHorizontalIcon,
+  RestartIcon,
 } from './Icons';
 
 interface Step {
@@ -32,21 +34,29 @@ export const NavigationStepsPanel: React.FC = () => {
     destinationLocation,
     activeDirections,
     activeStepIndex,
-    isLiveLocationActive,
-    isOutOfRadius,
     setActiveStepIndex,
     setDirectionsMode,
     clearDirections,
+    openQrModal,
+    floorStacks,
+    floors,
+    selectedBuildingId,
+    selectedFloorId,
   } = useMapStore();
 
   const [isShareMenuOpen, setIsShareMenuOpen] = useState(false);
-  const [showQrModal, setShowQrModal] = useState(false);
   const [copied, setCopied] = useState(false);
   const shareMenuRef = useRef<HTMLDivElement>(null);
+  const mobileShareMenuRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     const handleClickOutside = (event: MouseEvent) => {
-      if (shareMenuRef.current && !shareMenuRef.current.contains(event.target as Node)) {
+      if (
+        shareMenuRef.current &&
+        !shareMenuRef.current.contains(event.target as Node) &&
+        mobileShareMenuRef.current &&
+        !mobileShareMenuRef.current.contains(event.target as Node)
+      ) {
         setIsShareMenuOpen(false);
       }
     };
@@ -100,7 +110,14 @@ export const NavigationStepsPanel: React.FC = () => {
     }, 1800);
   };
 
-  const totalMeters = Math.round(activeDirections?.distance ?? 280);
+  const rawDist = activeDirections?.distance;
+  const totalMeters = typeof rawDist === 'number' ? Math.round(rawDist) : 280;
+  const formattedDist =
+    typeof rawDist === 'number'
+      ? rawDist < 1000
+        ? `${Math.round(rawDist)}m`
+        : `${(rawDist / 1000).toFixed(1)}km`
+      : '280m';
   const totalMinutes = Math.max(1, Math.round(totalMeters / 70));
 
   // Generate turn-by-turn steps from activeDirections if available, else standard fallback
@@ -111,7 +128,7 @@ export const NavigationStepsPanel: React.FC = () => {
       const type = (inst.action?.type || '').toLowerCase();
       const bearing = (inst.action?.bearing || '').toLowerCase();
       const dist = Math.round(inst.distance || 20);
-      const timeStr = dist > 40 ? `${Math.ceil(dist / 60)} min` : 'Less than a min';
+      const timeStr = dist > 40 ? `${Math.ceil(dist / 60)} min` : 'Less than a minute';
       const distStr = `${dist}m`;
 
       const targetFloorName =
@@ -119,8 +136,10 @@ export const NavigationStepsPanel: React.FC = () => {
         inst.coordinate?.floor?.name ||
         inst.action?.fromFloor?.name;
 
-      const isConnection = !!inst.action?.connection || type.includes('connection') || type.includes('stairs') || type.includes('elevator');
+      const connType = (inst.action?.connection?.type || inst.action?.connectionType || '').toLowerCase();
+      const isConnection = !!inst.action?.connection || type.includes('connection') || type.includes('stairs') || type.includes('elevator') || connType.length > 0;
       const isFloorChange = isConnection || (inst.action?.toFloor && inst.action?.fromFloor && inst.action.toFloor.id !== inst.action.fromFloor.id);
+      const isElevator = connType.includes('elevator') || type.includes('elevator');
 
       let text = inst.action?.text || inst.instruction || '';
       let IconComp = ArrowRightIcon;
@@ -134,12 +153,15 @@ export const NavigationStepsPanel: React.FC = () => {
           text = `Arrive at ${destName}`;
           IconComp = LocationPinIcon;
         } else if (isFloorChange) {
-          const connType = inst.action?.connection?.type || inst.action?.connectionType || 'stairs';
-          text = `Take ${connType} to ${targetFloorName || 'next floor'}`;
-          IconComp = StairsIcon;
+          const nameStr = isElevator ? 'elevator' : 'stairs';
+          text = `Take ${nameStr} to ${targetFloorName || 'next level'}`;
+          IconComp = isElevator ? ElevatorIcon : StairsIcon;
         } else if (bearing.includes('slight left') || bearing.includes('slight-left')) {
           text = `Turn slightly left near hallway`;
           IconComp = TurnSlightLeftIcon;
+        } else if (bearing.includes('slight right') || bearing.includes('slight-right')) {
+          text = `Turn slightly right near hallway`;
+          IconComp = TurnSlightRightIcon;
         } else if (bearing.includes('left')) {
           text = `Turn left along main corridor`;
           IconComp = TurnLeftIcon;
@@ -151,9 +173,11 @@ export const NavigationStepsPanel: React.FC = () => {
           IconComp = ArrowRightIcon;
         }
       } else {
-        if (type.includes('depart')) IconComp = TurnLeftIcon;
-        else if (type.includes('arrive')) IconComp = LocationPinIcon;
-        else if (isFloorChange) IconComp = StairsIcon;
+        if (type.includes('depart') || idx === 0) IconComp = TurnLeftIcon;
+        else if (type.includes('arrive') || idx === activeDirections.instructions.length - 1) IconComp = LocationPinIcon;
+        else if (isFloorChange) IconComp = isElevator ? ElevatorIcon : StairsIcon;
+        else if (bearing.includes('slight left') || bearing.includes('slight-left')) IconComp = TurnSlightLeftIcon;
+        else if (bearing.includes('slight right') || bearing.includes('slight-right')) IconComp = TurnSlightRightIcon;
         else if (bearing.includes('left')) IconComp = TurnLeftIcon;
         else if (bearing.includes('right')) IconComp = TurnRightIcon;
         else IconComp = ArrowRightIcon;
@@ -177,7 +201,7 @@ export const NavigationStepsPanel: React.FC = () => {
       {
         id: 0,
         instruction: `Leave ${originName} and turn left`,
-        duration: 'Less than a min',
+        duration: 'Less than a minute',
         distanceText: '15m',
         floorTag: 'Ground Floor',
         icon: TurnLeftIcon,
@@ -185,7 +209,7 @@ export const NavigationStepsPanel: React.FC = () => {
       {
         id: 1,
         instruction: 'Turn right at C112 - Financial Planning',
-        duration: 'Less than a min',
+        duration: 'Less than a minute',
         distanceText: '35m',
         floorTag: 'Ground Floor',
         icon: TurnRightIcon,
@@ -210,7 +234,7 @@ export const NavigationStepsPanel: React.FC = () => {
       {
         id: 4,
         instruction: `Arrive at ${destName}`,
-        duration: 'Less than a min',
+        duration: 'Less than a minute',
         distanceText: '10m',
         floorTag: 'Floor 2',
         icon: LocationPinIcon,
@@ -220,6 +244,8 @@ export const NavigationStepsPanel: React.FC = () => {
 
   const currentStep = steps[activeStepIndex] || steps[0];
   const CurrentIcon = currentStep.icon;
+  const isLastStep = activeStepIndex === steps.length - 1;
+  const progressPercent = steps.length > 1 ? (activeStepIndex / (steps.length - 1)) * 100 : 100;
 
   const handleStepChange = (newIndex: number) => {
     if (newIndex >= 0 && newIndex < steps.length) {
@@ -227,324 +253,385 @@ export const NavigationStepsPanel: React.FC = () => {
     }
   };
 
+  // Derive Building & Level labels for Mobile floating badge
+  const selectedBuilding = floorStacks.find((fs) => fs.id === selectedBuildingId);
+  const selectedFloor = floors.find((f) => f.id === selectedFloorId);
+
+  let bldgName = selectedBuilding?.name || 'B';
+  if (!bldgName.toLowerCase().includes('building')) {
+    bldgName = `Building ${bldgName}`;
+  }
+
+  let levelName = selectedFloor?.name || '1 - B';
+  if (!levelName.toLowerCase().includes('level') && !levelName.toLowerCase().includes('floor')) {
+    levelName = `Level ${levelName}`;
+  }
+
   return (
-    <div className="flex flex-col w-full text-gray-900 animate-fadeIn">
-      {/* Header Bar */}
-      <div className="flex items-center justify-between w-full pb-2 pr-11">
-        <div className="flex items-center gap-2">
+    <>
+      {/* DESKTOP SIDEBAR VIEW (MD screens and up) */}
+      <div className="hidden md:flex flex-col w-full text-gray-900 animate-fadeIn">
+        {/* Header Bar */}
+        <div className="flex items-center justify-between w-full pb-1 pr-2">
           <button
             onClick={() => setDirectionsMode('setup')}
-            className="flex items-center gap-1 text-xs font-bold text-gray-700 hover:text-gray-900 cursor-pointer px-2 py-1 rounded-lg hover:bg-gray-100 transition"
+            className="flex items-center gap-1.5 text-sm font-extrabold text-gray-700 hover:text-gray-900 cursor-pointer px-2 py-1 rounded-lg hover:bg-gray-100 transition"
           >
             <ArrowLeftIcon className="w-4 h-4 text-gray-700" />
-            <span>Options</span>
+            <span>Back</span>
           </button>
-          {isLiveLocationActive && (
-            <span
-              className={`text-[10px] font-extrabold px-2 py-0.5 rounded-full flex items-center gap-1 border ${
-                isOutOfRadius
-                  ? 'bg-amber-100 text-amber-800 border-amber-300'
-                  : 'bg-blue-100 text-blue-800 border-blue-300 animate-pulse'
-              }`}
-            >
-              <span className={`w-1.5 h-1.5 rounded-full ${isOutOfRadius ? 'bg-amber-600' : 'bg-blue-600'}`} />
-              {isOutOfRadius ? 'Out of Radius' : 'Live GPS'}
-            </span>
-          )}
-        </div>
 
-        <div className="flex items-center gap-2">
-          {/* Share navigation button & dropdown */}
           <div className="relative" ref={shareMenuRef}>
             <button
               onClick={() => setIsShareMenuOpen(!isShareMenuOpen)}
-              className={`w-7 h-7 rounded-full flex items-center justify-center transition cursor-pointer ${
-                isShareMenuOpen
-                  ? 'bg-blue-600 text-white shadow-md'
-                  : 'bg-gray-100 hover:bg-gray-200/80 text-gray-600'
-              }`}
-              title="Share navigation directions"
+              className="p-1.5 rounded-full hover:bg-gray-100 text-gray-600 transition cursor-pointer"
+              title="Options"
             >
-              <ShareIcon className="w-3.5 h-3.5" />
+              <DotsHorizontalIcon className="w-5 h-5" />
             </button>
 
             {/* Share Dropdown Menu */}
             {isShareMenuOpen && (
-              <div className="absolute right-0 top-8 z-50 w-56 bg-white border border-gray-200/90 rounded-2xl shadow-xl p-1.5 flex flex-col gap-1 animate-fadeIn ring-1 ring-black/5">
-                {/* Option 1: Copy link */}
+              <div className="absolute right-0 top-8 z-50 w-52 bg-white border border-gray-200/90 rounded-2xl shadow-xl p-1.5 flex flex-col gap-1 animate-fadeIn ring-1 ring-black/5">
                 <button
                   onClick={handleCopyLink}
-                  className="w-full text-left px-3 py-2.5 hover:bg-gray-100/80 rounded-xl flex items-center gap-3 transition cursor-pointer group"
+                  className="w-full text-left px-3 py-2 hover:bg-gray-100/80 rounded-xl flex items-center gap-2 text-xs font-bold text-gray-800 transition cursor-pointer"
                 >
-                  <div className="p-2 rounded-lg bg-gray-100 group-hover:bg-blue-100 text-gray-700 group-hover:text-blue-600 transition flex-shrink-0">
-                    {copied ? (
-                      <CheckIcon className="w-4 h-4 text-emerald-600" />
-                    ) : (
-                      <CopyIcon className="w-4 h-4" />
-                    )}
-                  </div>
-                  <div className="flex flex-col min-w-0 flex-1">
-                    <span className="text-xs font-bold text-gray-900 leading-tight">
-                      {copied ? 'Link Copied!' : 'Copy link'}
-                    </span>
-                    <span className="text-[10px] text-gray-500 font-medium truncate mt-0.5">
-                      {copied ? 'Copied to clipboard' : 'Copy directions link'}
-                    </span>
-                  </div>
+                  {copied ? <CheckIcon className="w-4 h-4 text-emerald-600" /> : <CopyIcon className="w-4 h-4" />}
+                  <span>{copied ? 'Link Copied!' : 'Copy link'}</span>
                 </button>
-
-                {/* Option 2: QR code */}
                 <button
                   onClick={() => {
                     setIsShareMenuOpen(false);
-                    setShowQrModal(true);
+                    openQrModal(shareUrl);
                   }}
-                  className="w-full text-left px-3 py-2.5 hover:bg-gray-100/80 rounded-xl flex items-center gap-3 transition cursor-pointer group"
+                  className="w-full text-left px-3 py-2 hover:bg-gray-100/80 rounded-xl flex items-center gap-2 text-xs font-bold text-gray-800 transition cursor-pointer"
                 >
-                  <div className="p-2 rounded-lg bg-gray-100 group-hover:bg-blue-100 text-gray-700 group-hover:text-blue-600 transition flex-shrink-0">
-                    <QrCodeIcon className="w-4 h-4" />
-                  </div>
-                  <div className="flex flex-col min-w-0 flex-1">
-                    <span className="text-xs font-bold text-gray-900 leading-tight">
-                      QR code
-                    </span>
-                    <span className="text-[10px] text-gray-500 font-medium truncate mt-0.5">
-                      Mobile handoff QR code
-                    </span>
-                  </div>
+                  <QrCodeIcon className="w-4 h-4" />
+                  <span>QR code</span>
+                </button>
+                <button
+                  onClick={clearDirections}
+                  className="w-full text-left px-3 py-2 hover:bg-red-50 text-red-600 rounded-xl flex items-center gap-2 text-xs font-bold transition cursor-pointer"
+                >
+                  <span>Exit navigation</span>
                 </button>
               </div>
             )}
           </div>
+        </div>
+
+        {/* Route title & total stats */}
+        <div className="flex flex-col my-1">
+          <span className="text-xs font-medium text-gray-500">
+            Directions to {destName}
+          </span>
+          <h2 className="text-2xl font-extrabold text-gray-900 tracking-tight mt-0.5">
+            {totalMinutes} {totalMinutes === 1 ? 'minute' : 'minutes'} total
+          </h2>
+        </div>
+
+        {/* Progress Range Slider Bar */}
+        <div className="relative w-full py-1.5 my-1 flex items-center gap-2">
+          <input
+            type="range"
+            min={0}
+            max={Math.max(1, steps.length - 1)}
+            value={activeStepIndex}
+            onChange={(e) => handleStepChange(Number(e.target.value))}
+            className="w-full accent-[#2563eb] h-2 bg-gray-200 rounded-lg cursor-pointer"
+          />
+        </div>
+
+        <hr className="border-gray-100 my-2" />
+
+        {/* Vertical Dotted Timeline Steps List */}
+        <div className="relative flex flex-col gap-3 py-1 max-h-[48vh] overflow-y-auto pr-1">
+          {/* Origin Node */}
+          <div className="flex items-center gap-3 pl-1">
+            <span className="w-3.5 h-3.5 rounded-full bg-gray-400 border-2 border-white shadow-xs flex-shrink-0" />
+            <span className="text-sm font-extrabold text-gray-900 truncate">{originName}</span>
+          </div>
+
+          {/* Dotted Timeline Line & Steps */}
+          <div className="relative ml-2.5 pl-5 border-l-2 border-dashed border-gray-300 flex flex-col gap-3 py-0.5">
+            {steps.map((step, idx) => {
+              const StepIcon = step.icon;
+              const isActive = idx === activeStepIndex;
+
+              return (
+                <button
+                  key={step.id}
+                  onClick={() => handleStepChange(idx)}
+                  className={`w-full text-left transition rounded-2xl p-3.5 flex items-start gap-3.5 cursor-pointer ${
+                    isActive
+                      ? 'bg-[#800020] text-white shadow-md border border-rose-950'
+                      : 'bg-transparent text-gray-900 hover:bg-gray-50'
+                  }`}
+                >
+                  <div
+                    className={`p-2 rounded-xl flex items-center justify-center flex-shrink-0 ${
+                      isActive ? 'bg-white/20 text-white' : 'bg-gray-100 text-gray-800'
+                    }`}
+                  >
+                    <StepIcon className="w-5 h-5" />
+                  </div>
+
+                  <div className="flex flex-col flex-1 min-w-0">
+                    <span
+                      className={`text-sm font-extrabold leading-snug ${
+                        isActive ? 'text-white' : 'text-gray-900'
+                      }`}
+                    >
+                      {step.instruction}
+                    </span>
+                    <span
+                      className={`text-xs font-medium mt-1 ${
+                        isActive ? 'text-rose-100/90' : 'text-gray-500'
+                      }`}
+                    >
+                      {step.duration} {step.distanceText ? `• ${step.distanceText}` : ''}
+                    </span>
+                  </div>
+                </button>
+              );
+            })}
+          </div>
+
+          {/* Destination Node */}
+          <div className="flex items-center gap-3 pl-1">
+            <div className="w-6 h-6 rounded-full bg-red-600 text-white flex items-center justify-center flex-shrink-0 shadow-md">
+              <LocationPinIcon className="w-3.5 h-3.5 text-white" />
+            </div>
+            <span className="text-sm font-extrabold text-gray-900 truncate">{destName}</span>
+          </div>
+        </div>
+
+        {/* Bottom Control Buttons: Left & Right Square Buttons */}
+        <div className="grid grid-cols-2 gap-3 w-full mt-3 pt-3 border-t border-gray-100">
+          <button
+            onClick={() => handleStepChange(activeStepIndex - 1)}
+            disabled={activeStepIndex === 0}
+            className={`py-3 px-4 rounded-2xl border flex items-center justify-center font-bold text-sm transition cursor-pointer ${
+              activeStepIndex === 0
+                ? 'bg-gray-100 border-gray-200 text-gray-300 cursor-not-allowed'
+                : 'bg-[#f0f0f2] border-transparent hover:bg-gray-200 text-gray-800 active:scale-95 shadow-xs'
+            }`}
+            title="Previous step"
+          >
+            <ArrowLeftIcon className="w-5 h-5 text-gray-700" />
+          </button>
 
           <button
-            onClick={clearDirections}
-            className="text-xs font-bold text-red-600 hover:text-red-800 hover:bg-red-50 px-2 py-1 rounded-lg transition cursor-pointer"
-            title="Exit navigation"
+            onClick={() => handleStepChange(activeStepIndex + 1)}
+            disabled={activeStepIndex === steps.length - 1}
+            className={`py-3 px-4 rounded-2xl border flex items-center justify-center font-bold text-sm transition cursor-pointer ${
+              activeStepIndex === steps.length - 1
+                ? 'bg-gray-100 border-gray-200 text-gray-300 cursor-not-allowed'
+                : 'bg-[#f0f0f2] border-transparent hover:bg-gray-200 text-gray-800 active:scale-95 shadow-xs'
+            }`}
+            title="Next step"
           >
-            Exit
+            <ArrowRightIcon className="w-5 h-5 text-gray-700" />
           </button>
         </div>
       </div>
 
-      {/* Route title & total stats */}
-      <div className="flex flex-col mb-3">
-        <div className="flex items-center justify-between">
-          <span className="text-xs text-gray-500 font-semibold uppercase tracking-wider">
-            Route to {destName}
-          </span>
-          <span className="text-xs font-extrabold text-[#5c0628] bg-rose-50 px-2.5 py-0.5 rounded-full border border-rose-200">
-            Step {activeStepIndex + 1} of {steps.length}
-          </span>
-        </div>
-        <h2 className="text-xl font-extrabold text-gray-900 tracking-tight mt-0.5">
-          {totalMinutes} {totalMinutes === 1 ? 'min' : 'mins'} ({totalMeters}m)
-        </h2>
-      </div>
-
-      {/* Progress Timeline Slider with step numbers */}
-      <div className="relative w-full py-2 mb-3 flex items-center justify-between px-1">
-        {/* Horizontal track line */}
-        <div className="absolute left-3 right-3 top-1/2 -translate-y-1/2 h-1 bg-gray-200 rounded-full z-0" />
-
-        {/* Timeline dots with step numbers */}
-        {steps.map((step, idx) => {
-          const isActive = idx === activeStepIndex;
-          const isPassed = idx < activeStepIndex;
-          return (
+      {/* MOBILE PHONE NAVIGATION VIEW (Mobile screens < 768px matching Seneca/Fanshawe screenshots) */}
+      <div className="block md:hidden pointer-events-none animate-fadeIn">
+        {/* 1. FLOATING TOP HEADER CARD */}
+        <div className="fixed top-3 left-3 right-3 z-30 pointer-events-auto bg-white rounded-2xl p-3.5 shadow-xl border border-gray-100/90 flex flex-col gap-2.5">
+          {/* Header Action Row */}
+          <div className="flex items-center justify-between w-full">
             <button
-              key={step.id}
-              onClick={() => handleStepChange(idx)}
-              className={`relative z-10 w-7 h-7 rounded-full flex items-center justify-center font-bold text-xs transition-all cursor-pointer shadow-sm ${
-                isActive
-                  ? 'bg-[#5c0628] text-white ring-4 ring-rose-900/20 scale-125 font-black'
-                  : isPassed
-                  ? 'bg-rose-800 text-white'
-                  : 'bg-gray-200 text-gray-600 hover:bg-gray-300'
-              }`}
-              title={`Step ${idx + 1}: ${step.instruction}`}
+              onClick={() => setDirectionsMode('setup')}
+              className="flex items-center gap-1 text-xs font-bold text-gray-700 hover:text-gray-900 cursor-pointer py-1 px-1 rounded-lg transition"
             >
-              {isPassed ? <CheckIcon className="w-3.5 h-3.5" /> : idx + 1}
+              <ArrowLeftIcon className="w-4 h-4 text-gray-700" />
+              <span className="text-sm font-semibold">Close</span>
             </button>
-          );
-        })}
-      </div>
 
-      <hr className="border-gray-100 my-1.5" />
-
-      {/* Origin Room Label */}
-      <div className="flex items-center gap-2.5 py-1.5 pl-1">
-        <span className="w-3 h-3 rounded-full bg-emerald-500 ring-2 ring-emerald-200 flex-shrink-0" />
-        <span className="text-xs font-bold text-gray-600 truncate">From: {originName}</span>
-      </div>
-
-      {/* Current Step Maroon Highlight Card */}
-      <div className="w-full bg-[#5c0628] rounded-2xl p-4 text-white shadow-lg flex items-center gap-3.5 my-2 border border-rose-900/40">
-        <div className="p-3 rounded-xl bg-white/15 flex items-center justify-center flex-shrink-0 shadow-inner">
-          <CurrentIcon className="w-6.5 h-6.5 text-white" />
-        </div>
-        <div className="flex flex-col flex-1 min-w-0">
-          <div className="flex items-center gap-2 flex-wrap mb-0.5">
-            <span className="text-[10px] font-black tracking-wider uppercase text-rose-200 bg-white/10 px-2 py-0.5 rounded-md">
-              Step {activeStepIndex + 1}
-            </span>
-            {currentStep.isFloorChange && (
-              <span className="text-[10px] font-black text-amber-200 bg-amber-950/60 border border-amber-400/40 px-2 py-0.5 rounded-md animate-pulse">
-                Floor Change
-              </span>
-            )}
-            {currentStep.floorTag && (
-              <span className="text-[10px] font-bold text-rose-100 bg-white/15 px-2 py-0.5 rounded-md">
-                {currentStep.floorTag}
-              </span>
-            )}
-          </div>
-          <span className="font-extrabold text-sm sm:text-base text-white leading-snug">
-            {currentStep.instruction}
-          </span>
-          <span className="text-xs text-rose-200/90 font-medium mt-1">
-            {currentStep.duration} {currentStep.distanceText ? `• ${currentStep.distanceText}` : ''}
-          </span>
-        </div>
-      </div>
-
-      {/* Full Step-by-Step List */}
-      <div className="flex flex-col gap-2 max-h-[35vh] overflow-y-auto pr-1 my-2 divide-y divide-gray-100">
-        {steps.map((step, idx) => {
-          const StepIcon = step.icon;
-          const isActive = idx === activeStepIndex;
-          const isPassed = idx < activeStepIndex;
-
-          return (
-            <button
-              key={step.id}
-              onClick={() => handleStepChange(idx)}
-              className={`pt-2 pb-2 flex items-center gap-3 text-left transition rounded-xl px-2 cursor-pointer ${
-                isActive
-                  ? 'bg-rose-50/80 font-bold'
-                  : isPassed
-                  ? 'opacity-60 hover:opacity-100'
-                  : 'hover:bg-gray-50'
-              }`}
-            >
-              <div
-                className={`w-7 h-7 rounded-lg flex items-center justify-center flex-shrink-0 text-xs font-bold ${
-                  isActive
-                    ? 'bg-[#5c0628] text-white'
-                    : isPassed
-                    ? 'bg-gray-200 text-gray-600'
-                    : 'bg-gray-100 text-gray-700'
-                }`}
+            {/* Options Dropdown Menu Trigger (...) */}
+            <div className="relative" ref={mobileShareMenuRef}>
+              <button
+                onClick={() => setIsShareMenuOpen(!isShareMenuOpen)}
+                className="w-8 h-8 rounded-full flex items-center justify-center text-gray-600 hover:bg-gray-100 transition cursor-pointer"
+                title="Options"
               >
-                {isPassed ? <CheckIcon className="w-3.5 h-3.5" /> : idx + 1}
-              </div>
+                <DotsHorizontalIcon className="w-5 h-5" />
+              </button>
 
-              <div className="p-1 rounded-md text-gray-700 flex-shrink-0">
-                <StepIcon className="w-4.5 h-4.5" />
-              </div>
-
-              <div className="flex flex-col flex-1 min-w-0">
-                <div className="flex items-center gap-1.5 flex-wrap">
-                  <span
-                    className={`text-xs sm:text-sm leading-tight truncate ${
-                      isActive
-                        ? 'text-[#5c0628] font-extrabold'
-                        : isPassed
-                        ? 'text-gray-500 line-through'
-                        : 'text-gray-800 font-semibold'
-                    }`}
+              {/* Mobile Share Dropdown Menu */}
+              {isShareMenuOpen && (
+                <div className="absolute right-0 top-9 z-50 w-56 bg-white border border-gray-200/90 rounded-2xl shadow-xl p-1.5 flex flex-col gap-1 ring-1 ring-black/5">
+                  <button
+                    onClick={handleCopyLink}
+                    className="w-full text-left px-3 py-2.5 hover:bg-gray-100/80 rounded-xl flex items-center gap-3 transition cursor-pointer group"
                   >
-                    {step.instruction}
-                  </span>
-                  {step.isFloorChange && (
-                    <span className="text-[9px] font-extrabold text-amber-700 bg-amber-50 border border-amber-200 px-1.5 py-0.5 rounded-md flex-shrink-0">
-                      Floor Change
-                    </span>
-                  )}
+                    <div className="p-2 rounded-lg bg-gray-100 group-hover:bg-blue-100 text-gray-700 group-hover:text-blue-600 transition flex-shrink-0">
+                      {copied ? (
+                        <CheckIcon className="w-4 h-4 text-emerald-600" />
+                      ) : (
+                        <CopyIcon className="w-4 h-4" />
+                      )}
+                    </div>
+                    <div className="flex flex-col min-w-0 flex-1">
+                      <span className="text-xs font-bold text-gray-900 leading-tight">
+                        {copied ? 'Link Copied!' : 'Copy link'}
+                      </span>
+                      <span className="text-[10px] text-gray-500 font-medium truncate mt-0.5">
+                        {copied ? 'Copied to clipboard' : 'Copy directions link'}
+                      </span>
+                    </div>
+                  </button>
+
+                  <button
+                    onClick={() => {
+                      setIsShareMenuOpen(false);
+                      openQrModal(shareUrl);
+                    }}
+                    className="w-full text-left px-3 py-2.5 hover:bg-gray-100/80 rounded-xl flex items-center gap-3 transition cursor-pointer group"
+                  >
+                    <div className="p-2 rounded-lg bg-gray-100 group-hover:bg-blue-100 text-gray-700 group-hover:text-blue-600 transition flex-shrink-0">
+                      <QrCodeIcon className="w-4 h-4" />
+                    </div>
+                    <div className="flex flex-col min-w-0 flex-1">
+                      <span className="text-xs font-bold text-gray-900 leading-tight">
+                        QR code
+                      </span>
+                      <span className="text-[10px] text-gray-500 font-medium truncate mt-0.5">
+                        Mobile handoff QR code
+                      </span>
+                    </div>
+                  </button>
                 </div>
-                <span className="text-[11px] text-gray-400 font-medium mt-0.5">
-                  {step.duration} {step.distanceText ? `• ${step.distanceText}` : ''} {step.floorTag ? `(${step.floorTag})` : ''}
-                </span>
-              </div>
-            </button>
-          );
-        })}
-      </div>
-
-      {/* Bottom Prev / Next Navigation Buttons */}
-      <div className="grid grid-cols-2 gap-2.5 w-full mt-2 pt-2 border-t border-gray-100">
-        <button
-          onClick={() => handleStepChange(activeStepIndex - 1)}
-          disabled={activeStepIndex === 0}
-          className={`py-2.5 px-4 rounded-2xl border flex items-center justify-center gap-2 font-bold text-xs transition cursor-pointer ${
-            activeStepIndex === 0
-              ? 'bg-gray-50 border-gray-200 text-gray-300 cursor-not-allowed'
-              : 'bg-white border-gray-200 hover:bg-gray-100 text-gray-800 active:scale-98 shadow-xs'
-          }`}
-          title="Previous step"
-        >
-          <ArrowLeftIcon className="w-4 h-4" />
-          <span>Previous Step</span>
-        </button>
-
-        <button
-          onClick={() => handleStepChange(activeStepIndex + 1)}
-          disabled={activeStepIndex === steps.length - 1}
-          className={`py-2.5 px-4 rounded-2xl border flex items-center justify-center gap-2 font-bold text-xs transition cursor-pointer ${
-            activeStepIndex === steps.length - 1
-              ? 'bg-gray-50 border-gray-200 text-gray-300 cursor-not-allowed'
-              : 'bg-[#5c0628] hover:bg-[#4a041f] border-rose-950 text-white active:scale-98 shadow-md'
-          }`}
-          title="Next step"
-        >
-          <span>Next Step</span>
-          <ArrowRightIcon className="w-4 h-4" />
-        </button>
-      </div>
-
-      {/* QR Code Mobile Handoff Panel Overlay */}
-      {showQrModal && (
-        <div className="absolute inset-0 z-40 bg-white rounded-3xl p-4 flex flex-col items-center justify-between text-center animate-fadeIn shadow-2xl border border-gray-100/90 overflow-hidden">
-          {/* Top Header Row with Close 'X' Button */}
-          <div className="w-full flex items-start justify-between text-left pb-1">
-            <div className="flex flex-col min-w-0 flex-1 pr-2">
-              <h3 className="text-xl font-extrabold text-gray-900 tracking-tight leading-tight">
-                Mobile Handoff
-              </h3>
-              <p className="text-xs text-gray-500 font-medium mt-0.5 leading-snug">
-                Scan with phone camera to open directions on mobile
-              </p>
+              )}
             </div>
-            <button
-              onClick={() => setShowQrModal(false)}
-              className="w-9 h-9 rounded-full bg-gray-100 hover:bg-gray-200 text-gray-600 flex items-center justify-center transition cursor-pointer flex-shrink-0"
-              title="Close Mobile Handoff"
-              aria-label="Close Mobile Handoff"
-            >
-              <ClearIcon className="w-4 h-4" />
-            </button>
           </div>
 
-          {/* QR Code Container */}
-          <div className="w-full flex-1 my-1.5 p-2.5 bg-white rounded-2xl border-2 border-gray-200/90 shadow-2xs flex items-center justify-center overflow-hidden">
-            <QRCodeSVG
-              value={shareUrl}
-              size={180}
-              level="H"
-              includeMargin={false}
-              className="max-h-full max-w-full"
-              imageSettings={{
-                src: 'https://www.fanshawec.ca/themes/custom/de_theme/logo.png',
-                x: undefined,
-                y: undefined,
-                height: 26,
-                width: 26,
-                excavate: true,
-              }}
-            />
+          {/* Main Maneuver Banner */}
+          <div className="flex items-center gap-3.5 pt-0.5">
+            <div className="w-11 h-11 rounded-2xl bg-gray-100 flex items-center justify-center flex-shrink-0 text-gray-800 shadow-inner">
+              <CurrentIcon className="w-6 h-6 text-gray-800" />
+            </div>
+            <div className="flex flex-col flex-1 min-w-0">
+              <h3 className="font-extrabold text-base text-gray-900 leading-snug truncate">
+                {currentStep.instruction}
+              </h3>
+              <span className="text-xs text-gray-500 font-medium mt-0.5">
+                {currentStep.duration}
+              </span>
+            </div>
           </div>
         </div>
-      )}
+
+        {/* 2 & 3. FLOATING BOTTOM CONTAINER (BADGE + SHEET) */}
+        <div className="fixed bottom-3 left-3 right-3 z-30 pointer-events-auto flex flex-col items-center gap-2 font-sans">
+          {/* FLOATING BUILDING / LEVEL BADGE */}
+          <div className="bg-[#2b3545]/95 text-white px-4 py-1.5 rounded-xl text-xs font-semibold shadow-lg flex items-center gap-2 border border-slate-700/60 backdrop-blur-md">
+            <span>{bldgName}</span>
+            <span className="text-slate-400 font-normal">|</span>
+            <span>{levelName}</span>
+          </div>
+
+          {/* FLOATING BOTTOM SHEET CARD */}
+          <div className="w-full bg-white rounded-[26px] p-4 shadow-2xl border border-gray-100 flex flex-col gap-2.5">
+          {/* Progress Timeline Slider */}
+          <div className="relative w-full py-1.5 flex items-center justify-between">
+            {/* Background Track Line */}
+            <div className="absolute left-1 right-1 top-1/2 -translate-y-1/2 h-1.5 bg-gray-200 rounded-full z-0 pointer-events-none" />
+
+            {/* Blue Filled Progress Line */}
+            <div
+              className="absolute left-1 top-1/2 -translate-y-1/2 h-1.5 bg-blue-600 rounded-full z-0 transition-all duration-300 pointer-events-none"
+              style={{ width: `${progressPercent}%` }}
+            />
+
+            {/* Hidden Input Range Slider for Touch / Interaction */}
+            <input
+              type="range"
+              min={0}
+              max={steps.length - 1}
+              value={activeStepIndex}
+              onChange={(e) => handleStepChange(Number(e.target.value))}
+              className="absolute inset-0 w-full opacity-0 cursor-pointer z-20"
+            />
+
+            {/* Start Ring Marker (Left) */}
+            <div className="relative z-10 w-3.5 h-3.5 rounded-full border-2 border-gray-400 bg-white shadow-sm pointer-events-none flex-shrink-0" />
+
+            {/* End Checkmark Badge (If arrived at final step) */}
+            {isLastStep ? (
+              <div className="relative z-10 w-5 h-5 rounded-full bg-blue-600 text-white flex items-center justify-center shadow-md scale-110 pointer-events-none flex-shrink-0">
+                <CheckIcon className="w-3.5 h-3.5 text-white stroke-[3]" />
+              </div>
+            ) : (
+              /* End Target Pin Circle (Right) */
+              <div className="relative z-10 w-4 h-4 rounded-full border border-gray-400 bg-white flex items-center justify-center pointer-events-none flex-shrink-0 shadow-xs">
+                <div className="w-1.5 h-1.5 rounded-full bg-gray-600" />
+              </div>
+            )}
+          </div>
+
+          {/* Status & Destination Text */}
+          <div className="flex flex-col mt-0.5">
+            <span className="text-xs text-gray-500 font-medium leading-tight">
+              Directions to {destName}
+            </span>
+            <h2 className="text-lg font-extrabold text-gray-900 tracking-tight mt-0.5">
+              {isLastStep ? 'You have arrived' : `${totalMinutes} ${totalMinutes === 1 ? 'minute' : 'minutes'} (${formattedDist})`}
+            </h2>
+          </div>
+
+          {/* Action Control Buttons Row */}
+          <div className="flex items-center gap-3 w-full mt-1">
+            {!isLastStep ? (
+              <>
+                {/* Previous Step Button (<) */}
+                <button
+                  onClick={() => handleStepChange(activeStepIndex - 1)}
+                  disabled={activeStepIndex === 0}
+                  className="flex-1 py-3 bg-white border border-gray-200 hover:bg-gray-50 active:bg-gray-100 rounded-2xl flex items-center justify-center transition shadow-sm cursor-pointer disabled:opacity-30 disabled:cursor-not-allowed"
+                  title="Previous Step"
+                >
+                  <ArrowLeftIcon className="w-5 h-5 text-gray-700" />
+                </button>
+
+                {/* Next Step Button (>) */}
+                <button
+                  onClick={() => handleStepChange(activeStepIndex + 1)}
+                  disabled={activeStepIndex === steps.length - 1}
+                  className="flex-1 py-3 bg-gray-100 hover:bg-gray-200 active:bg-gray-300 text-gray-800 rounded-2xl flex items-center justify-center transition cursor-pointer disabled:opacity-30 disabled:cursor-not-allowed"
+                  title="Next Step"
+                >
+                  <ArrowRightIcon className="w-5 h-5 text-gray-700" />
+                </button>
+              </>
+            ) : (
+              <>
+                {/* Restart Navigation Button (↺) */}
+                <button
+                  onClick={() => handleStepChange(0)}
+                  className="w-12 py-3 bg-gray-100 hover:bg-gray-200 active:bg-gray-300 text-gray-700 rounded-2xl flex items-center justify-center transition cursor-pointer flex-shrink-0"
+                  title="Restart Navigation"
+                >
+                  <RestartIcon className="w-5 h-5 text-gray-700" />
+                </button>
+
+                {/* Primary Finish Button ("I'm done") */}
+                <button
+                  onClick={clearDirections}
+                  className="flex-1 py-3 bg-gray-300 hover:bg-gray-400 active:bg-gray-500 text-gray-900 font-extrabold text-sm rounded-2xl flex items-center justify-center transition cursor-pointer shadow-xs"
+                >
+                  I'm done
+                </button>
+              </>
+            )}
+          </div>
+        </div>
+      </div>
     </div>
-  );
+  </>
+);
 };
+

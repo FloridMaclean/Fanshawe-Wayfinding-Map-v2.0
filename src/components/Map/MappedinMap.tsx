@@ -9,7 +9,6 @@ import {
   type FloorStack,
   type TCancellablePromise,
 } from '@mappedin/mappedin-js';
-import { BlueDot } from '@mappedin/blue-dot';
 import { useMapStore } from '../../store/useMapStore';
 import { ZoomControls } from '../UI/ZoomControls';
 import {
@@ -30,7 +29,6 @@ export const MappedinMap: React.FC = () => {
   const {
     setMapData,
     setMapView,
-    setBlueDot,
     setLoading,
     setError,
     syncFromMapView,
@@ -40,23 +38,14 @@ export const MappedinMap: React.FC = () => {
     directionsMode,
     selectedFloorId,
     floors,
-    isLiveLocationActive,
-    isOutOfRadius,
-    userDistanceToCampus,
-    isSimulationActive,
-    toggleSimulationMode,
-    stopSimulationMode,
   } = useMapStore();
 
   const currentFloor = floors.find((f) => f.id === selectedFloorId);
   const currentFloorName = currentFloor?.name || '';
 
   useEffect(() => {
-    if (!containerRef.current || isInitialized.current) return;
-    isInitialized.current = true;
-
+    let isCancelled = false;
     let mapViewInstance: MapView | null = null;
-    let blueDotInstance: BlueDot | null = null;
     let progressiveController: ProgressiveLabelingController | null = null;
     const animationsByFacade = new Map<string, TCancellablePromise<any>>();
     const floorToShowByBuilding = new Map<string, Floor>();
@@ -135,29 +124,70 @@ export const MappedinMap: React.FC = () => {
       });
     }
 
+    async function waitForContainer(el: HTMLDivElement, maxWaitMs = 5000): Promise<boolean> {
+      const start = Date.now();
+      while (Date.now() - start < maxWaitMs) {
+        if (isCancelled) return false;
+        const rect = el.getBoundingClientRect();
+        const w = el.clientWidth || rect.width;
+        const h = el.clientHeight || rect.height;
+        if (w > 0 && h > 0) return true;
+        await new Promise((res) => setTimeout(res, 50));
+      }
+      const rect = el.getBoundingClientRect();
+      const w = el.clientWidth || rect.width;
+      const h = el.clientHeight || rect.height;
+      return w > 0 && h > 0;
+    }
+
+    async function fetchMapDataWithRetry(retries = 3): Promise<MapData> {
+      let lastError: any = null;
+      for (let attempt = 1; attempt <= retries; attempt++) {
+        if (isCancelled) throw new Error('Initialization cancelled');
+        try {
+          return await getMapData({
+            key: MAPPEDIN_KEY,
+            secret: MAPPEDIN_SECRET,
+            mapId: MAP_ID,
+          });
+        } catch (err: any) {
+          lastError = err;
+          if (attempt === retries || isCancelled) break;
+          const isRateLimit = String(err?.message || err).includes('429');
+          const delay = isRateLimit ? attempt * 1500 : attempt * 800;
+          await new Promise((res) => setTimeout(res, delay));
+        }
+      }
+      throw lastError || new Error('Failed to fetch map data');
+    }
+
     async function initMap() {
       try {
         setLoading(true);
         setError(null);
 
-        const data = await getMapData({
-          key: MAPPEDIN_KEY,
-          secret: MAPPEDIN_SECRET,
-          mapId: MAP_ID,
-        });
+        if (!containerRef.current || isCancelled) return;
 
-        if (!containerRef.current) return;
+        const hasSize = await waitForContainer(containerRef.current);
+        if (isCancelled) return;
+        if (!hasSize && containerRef.current) {
+          containerRef.current.style.width = '100%';
+          containerRef.current.style.height = '100%';
+          containerRef.current.style.minHeight = '300px';
+          containerRef.current.style.position = 'relative';
+        }
+
+        const data = await fetchMapDataWithRetry();
+        if (isCancelled || !containerRef.current) return;
 
         const view = await show3dMap(containerRef.current, data);
-        mapViewInstance = view;
-
-        // Initialize Mappedin native BlueDot extension
-        try {
-          blueDotInstance = new BlueDot(view);
-          setBlueDot(blueDotInstance);
-        } catch (bdErr) {
-          console.warn('Could not initialize Mappedin BlueDot extension:', bdErr);
+        if (isCancelled) {
+          try {
+            view.destroy();
+          } catch (e) {}
+          return;
         }
+        mapViewInstance = view;
 
         // 1. Activate and style spaces using predefined COLOR_GROUPS
         applySpaceColors(view, data);
@@ -184,6 +214,7 @@ export const MappedinMap: React.FC = () => {
         let lastZoom = view.Camera.zoomLevel;
 
         view.on('camera-change', (transform) => {
+          if (isCancelled) return;
           const zoom = transform?.zoomLevel ?? view.Camera.zoomLevel;
           if (Math.abs(zoom - lastZoom) >= 0.25) {
             lastZoom = zoom;
@@ -202,6 +233,7 @@ export const MappedinMap: React.FC = () => {
         // Facades in view listener
         const facadesInView = new Set<string>();
         view.on('facades-in-view-change', (event) => {
+          if (isCancelled) return;
           // Do NOT auto-switch floor during directions navigation or setup
           if (useMapStore.getState().directionsMode !== 'none') return;
 
@@ -224,48 +256,86 @@ export const MappedinMap: React.FC = () => {
 
         // Floor change listener
         view.on('floor-change', (event) => {
+          if (isCancelled) return;
           const { floor: newFloor } = event;
           elevation = newFloor.elevation;
           updateFloorsToShow(data);
 
-          // Keep all facades open so building space colors remain permanent during zoom/pan
-          data.getByType('floor-stack').forEach((fs) => {
-            showFloors(fs, view);
-            if (fs.facade) {
-              openFacade(fs.facade, view);
-            }
-          });
+          const { activeDirections, directionsMode } = useMapStore.getState();
 
-          // Re-apply space colors on floor change for complete color consistency
-          applySpaceColors(view, data);
+          if (directionsMode !== 'none' && activeDirections) {
+            try {
+              view.updateState(newFloor, { visible: true });
+              view.Navigation.draw(activeDirections, {
+                setMapToDeparture: false,
+                setMapOnConnectionClick: true,
+                animatePathDrawing: false,
+                pathOptions: {
+                  color: '#003BAF',
+                  accentColor: '#ffffff',
+                  displayArrowsOnPath: true,
+                  animateArrowsOnPath: true,
+                  showPulse: false,
+                  width: 3.0,
+                  __EXPERIMENTAL__CONNECTION_COLOR: '#003BAF',
+                  __EXPERIMENTAL__CONNECTION_DASHED: false,
+                },
+                markerOptions: {
+                  departureColor: '#003BAF',
+                  destinationColor: '#DC2626',
+                  animated: true,
+                },
+              });
+            } catch (e) {
+              console.warn('Failed to redraw navigation on floor change:', e);
+            }
+          } else {
+            // Keep all facades open so building space colors remain permanent during zoom/pan
+            data.getByType('floor-stack').forEach((fs) => {
+              showFloors(fs, view);
+              if (fs.facade) {
+                openFacade(fs.facade, view);
+              }
+            });
+
+            // Re-apply space colors on floor change for complete color consistency
+            applySpaceColors(view, data);
+          }
 
           syncFromMapView(newFloor);
         });
 
         // Click listener to select room/space and show popup marker on exact location
         view.on('click', (event) => {
+          if (isCancelled) return;
           const clickedSpace = event.spaces?.[0];
           if (clickedSpace) {
             useMapStore.getState().selectSearchResult(clickedSpace);
           }
         });
+
+        if (!isCancelled) {
+          isInitialized.current = true;
+        }
       } catch (err: any) {
+        if (isCancelled) return;
         console.error('Failed to initialize Mappedin Map:', err);
         setError(err.message || 'Error loading map');
       } finally {
-        setLoading(false);
+        if (!isCancelled) {
+          setLoading(false);
+        }
       }
     }
 
     initMap();
 
     return () => {
+      isCancelled = true;
+      isInitialized.current = false;
       if (progressiveController) {
-        progressiveController.destroy();
-      }
-      if (blueDotInstance) {
         try {
-          blueDotInstance.destroy();
+          progressiveController.destroy();
         } catch (e) {}
       }
       if (mapViewInstance) {
@@ -274,10 +344,10 @@ export const MappedinMap: React.FC = () => {
         } catch (e) {}
       }
     };
-  }, [setMapData, setMapView, setBlueDot, setLoading, setError, syncFromMapView]);
+  }, [setMapData, setMapView, setLoading, setError, syncFromMapView, setZoomLevel]);
 
   return (
-    <div className="relative w-full h-full flex-1 overflow-hidden">
+    <div className="absolute inset-0 w-full h-full overflow-hidden">
       {isLoading && (
         <div className="absolute inset-0 bg-gray-900/40 backdrop-blur-sm z-30 flex items-center justify-center">
           <div className="bg-white px-6 py-4 rounded-2xl shadow-2xl flex items-center gap-3">
@@ -302,64 +372,12 @@ export const MappedinMap: React.FC = () => {
         </div>
       )}
 
-      <div ref={containerRef} className="w-full h-full" />
+      <div
+        ref={containerRef}
+        className="absolute inset-0 w-full h-full"
+        style={{ width: '100%', height: '100%', minHeight: '300px' }}
+      />
       <ZoomControls />
-
-      {/* Floating Out of Radius Banner */}
-      {isLiveLocationActive && isOutOfRadius && !isSimulationActive && (
-        <div className="absolute top-4 left-1/2 -translate-x-1/2 z-20 pointer-events-auto bg-amber-950/95 text-white backdrop-blur-md px-4 py-3 rounded-2xl shadow-2xl border border-amber-400/40 flex flex-col sm:flex-row sm:items-center gap-3 animate-fadeIn max-w-[92vw] sm:max-w-lg">
-          <div className="flex items-center gap-3 flex-1 min-w-0">
-            <div className="w-8 h-8 rounded-full bg-amber-500/30 flex items-center justify-center flex-shrink-0 text-amber-300 font-extrabold text-base">
-              ⚠️
-            </div>
-            <div className="flex flex-col flex-1 min-w-0">
-              <div className="flex items-center gap-2">
-                <span className="text-xs font-black text-amber-200 uppercase tracking-wide">
-                  Out of Campus Radius
-                </span>
-                {userDistanceToCampus && (
-                  <span className="text-[10px] font-bold bg-amber-900/80 px-2 py-0.5 rounded-md border border-amber-500/30 text-amber-300">
-                    {(userDistanceToCampus / 1000).toFixed(1)} km away
-                  </span>
-                )}
-              </div>
-              <p className="text-[11px] text-amber-100 font-medium leading-tight mt-0.5">
-                You are off campus. Switch to Simulation Demo to preview live walking positioning.
-              </p>
-            </div>
-          </div>
-          <button
-            onClick={toggleSimulationMode}
-            className="px-3 py-1.5 bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-700 hover:to-indigo-700 text-white font-bold text-xs rounded-xl shadow-md transition flex items-center justify-center gap-1.5 self-end sm:self-auto cursor-pointer"
-          >
-            <span>▶</span> Test Walking Demo
-          </button>
-        </div>
-      )}
-
-      {/* Floating Active Simulation Banner */}
-      {isSimulationActive && (
-        <div className="absolute top-4 left-1/2 -translate-x-1/2 z-20 pointer-events-auto bg-purple-950/95 text-white backdrop-blur-md px-4 py-2.5 rounded-2xl shadow-2xl border border-purple-400/40 flex items-center gap-3 animate-fadeIn max-w-[92vw] sm:max-w-md">
-          <div className="relative flex items-center justify-center">
-            <span className="w-3 h-3 rounded-full bg-purple-400 animate-ping absolute" />
-            <span className="w-2.5 h-2.5 rounded-full bg-purple-300 relative" />
-          </div>
-          <div className="flex flex-col flex-1 min-w-0">
-            <span className="text-[10px] font-black uppercase tracking-wide text-purple-200">
-              Campus Walking Simulation
-            </span>
-            <p className="text-[11px] text-purple-100 font-medium leading-tight mt-0.5 truncate">
-              Simulating live indoor GPS walking across Fanshawe Campus
-            </p>
-          </div>
-          <button
-            onClick={stopSimulationMode}
-            className="px-2.5 py-1 bg-white/20 hover:bg-white/30 text-white font-bold text-xs rounded-lg transition cursor-pointer flex-shrink-0"
-          >
-            Stop Demo
-          </button>
-        </div>
-      )}
 
       {/* Dynamic Floating Floor Indicator Overlay during Navigation */}
       {directionsMode === 'navigating' && currentFloorName && (
@@ -381,4 +399,5 @@ export const MappedinMap: React.FC = () => {
     </div>
   );
 };
+
 
